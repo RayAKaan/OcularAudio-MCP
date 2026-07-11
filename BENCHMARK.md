@@ -83,6 +83,21 @@ Deep analysis of OcularAudio MCP against all major video transcript, screenshot,
 | **Language** | Multi-language | Auto-detect |
 | **Cost** | Free | Free (local) |
 
+### Real-World Video Benchmarks
+
+| Video | Duration | Transcript Size | Fresh Fetch | Cache Hit | Screenshot |
+|-------|----------|-----------------|-------------|-----------|------------|
+| **Rick Astley** (dQw4w9WgXcQ) | 3:33 | 2.9 KB | 1.6 s | 0.001 s | 0.34 s |
+| **3Blue1Brown Neural Networks** (aircAruvnKk) | 19:47 | 21.5 KB | 2.38 s | 0.001 s | 0.34 s |
+| **3Blue1Brown Interview** (Rtkac4WHC1o) | 1:55:28 | 164 KB | — | 0.004 s | 1.34 s |
+| **Fullstack Tutorial** (LzMnsfqjzkA) | 47:29:20 | 3.5 MB | 3.79 s | 0.035 s | 5.77 s |
+
+#### Notes on Extreme Cases
+
+- **Fullstack Tutorial (47.5 hours)**: Transcript is 3.5 million characters — fetched in 3.79s via YouTube captions API. Cache hit reduces to 35ms.
+- **3Blue1Brown Interview (1h 55m)**: 164KB transcript loaded from cache in 4ms.
+- **Screenshot scaling**: Larger videos (more frames) take longer to seek — 5.77s for 47.5h video vs 0.34s for 3:33 video.
+
 ---
 
 ## Executive Summary
