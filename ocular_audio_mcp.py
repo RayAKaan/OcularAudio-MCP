@@ -48,6 +48,145 @@ mcp = FastMCP(
 # Global holder for the local whisper model instance (loaded lazily)
 _whisper_engine = None
 
+
+def _check_system_capabilities() -> dict:
+    """Check availability of system dependencies and return capabilities."""
+    capabilities = {
+        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        "ffmpeg": False,
+        "whisper": {"available": False, "engine": None, "model_size": None},
+        "tesseract": {"available": False, "path": None},
+        "opencv": False,
+        "cookies_found": False,
+        "cache_dir": str(CACHE_DIR),
+    }
+
+    # Check FFmpeg
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-version"],
+            capture_output=True,
+            timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+        )
+        capabilities["ffmpeg"] = result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        capabilities["ffmpeg"] = False
+
+    # Check Whisper engines
+    try:
+        from faster_whisper import WhisperModel
+        model_size = os.environ.get("WHISPER_MODEL_SIZE", "tiny")
+        capabilities["whisper"] = {
+            "available": True,
+            "engine": "faster-whisper",
+            "model_size": model_size
+        }
+    except ImportError:
+        try:
+            import whisper
+            model_size = os.environ.get("WHISPER_MODEL_SIZE", "tiny")
+            capabilities["whisper"] = {
+                "available": True,
+                "engine": "openai-whisper",
+                "model_size": model_size
+            }
+        except ImportError:
+            capabilities["whisper"] = {"available": False, "engine": None, "model_size": None}
+
+    # Check Tesseract
+    try:
+        import pytesseract
+        if sys.platform == 'win32':
+            tesseract_path = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+            if os.path.exists(tesseract_path):
+                capabilities["tesseract"] = {"available": True, "path": tesseract_path}
+            else:
+                # Try to find in PATH
+                try:
+                    result = subprocess.run(
+                        ["tesseract", "--version"],
+                        capture_output=True,
+                        timeout=5,
+                        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+                    )
+                    if result.returncode == 0:
+                        capabilities["tesseract"] = {"available": True, "path": "tesseract (in PATH)"}
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    capabilities["tesseract"] = {"available": False, "path": None}
+        else:
+            # macOS/Linux - check PATH
+            try:
+                result = subprocess.run(
+                    ["tesseract", "--version"],
+                    capture_output=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    capabilities["tesseract"] = {"available": True, "path": "tesseract (in PATH)"}
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                capabilities["tesseract"] = {"available": False, "path": None}
+    except ImportError:
+        capabilities["tesseract"] = {"available": False, "path": None}
+
+    # Check OpenCV
+    try:
+        import cv2
+        capabilities["opencv"] = True
+    except ImportError:
+        capabilities["opencv"] = False
+
+    # Check cookies
+    capabilities["cookies_found"] = bool(find_cookies_file())
+
+    return capabilities
+
+
+def _get_cache_list() -> list:
+    """List all cached videos with metadata."""
+    cache_files = list(CACHE_DIR.glob("*.json"))
+    videos = []
+    for cache_file in cache_files:
+        try:
+            data = json.loads(cache_file.read_text(encoding='utf-8'))
+            meta = data.get("metadata", {})
+            stat = cache_file.stat()
+            videos.append({
+                "id": cache_file.stem,
+                "title": meta.get("title", "Unknown"),
+                "uploader": meta.get("uploader", "Unknown"),
+                "duration": meta.get("duration", "Unknown"),
+                "method": data.get("method", "unknown"),
+                "cached_at": data.get("timestamp", 0),
+                "file_size_bytes": stat.st_size,
+            })
+        except Exception:
+            videos.append({
+                "id": cache_file.stem,
+                "title": "(corrupted)",
+                "uploader": "",
+                "duration": "Unknown",
+                "method": "unknown",
+                "cached_at": 0,
+                "file_size_bytes": cache_file.stat().st_size,
+            })
+    return sorted(videos, key=lambda x: x.get("cached_at", 0), reverse=True)
+
+
+def _clear_cache(video_id: str = None) -> dict:
+    """Clear cache for a specific video or all videos."""
+    if video_id:
+        cache_file = CACHE_DIR / f"{video_id}.json"
+        if cache_file.exists():
+            cache_file.unlink()
+            return {"cleared": 1, "video_id": video_id}
+        return {"cleared": 0, "video_id": video_id, "message": "Not found in cache"}
+    else:
+        count = len(list(CACHE_DIR.glob("*.json")))
+        for f in CACHE_DIR.glob("*.json"):
+            f.unlink()
+        return {"cleared": count, "message": f"Cleared {count} cached videos"}
+
 def get_whisper_engine():
     global _whisper_engine
     if _whisper_engine is not None:
@@ -417,6 +556,7 @@ def _blocking_whisper_transcription(url_or_id: str, cookies_path: str) -> str:
 
     download_target = url_or_id if url_or_id.startswith("http") else f"https://www.youtube.com/watch?v={url_or_id}"
 
+    log.info("PROGRESS: Downloading audio track for transcription...")
     log.info("Starting audio track extraction for %s via yt-dlp...", download_target)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([download_target])
@@ -431,6 +571,7 @@ def _blocking_whisper_transcription(url_or_id: str, cookies_path: str) -> str:
             "  - FFmpeg is not installed or not in PATH"
         )
 
+    log.info("PROGRESS: Running Whisper speech-to-text locally...")
     log.info("Running Whisper speech-to-text offline locally...")
     formatted_segments = []
 
@@ -498,6 +639,7 @@ async def get_ocular_audio_transcript(url: str, use_local_whisper: bool = True) 
         )
 
     # 2. RUN METADATA FETCH
+    log.info("PROGRESS: Fetching video metadata...")
     log.info("Fetching video metadata and chapters asynchronously...")
     try:
         metadata = await asyncio.wait_for(
@@ -528,6 +670,7 @@ async def get_ocular_audio_transcript(url: str, use_local_whisper: bool = True) 
     # 3. APPROACH 1: Fast Subtitle API (Only works on YouTube)
     if is_youtube:
         try:
+            log.info("PROGRESS: Fetching YouTube captions...")
             log.info("Querying YouTube caption endpoints...")
             session = get_authenticated_session(cookies_path)
 
@@ -634,7 +777,43 @@ async def get_ocular_audio_transcript(url: str, use_local_whisper: bool = True) 
         )
 
 
-def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies_path: str) -> list:
+def extract_text_from_frame(image_path: str) -> str:
+    """Run OCR on a captured frame using Tesseract with OpenCV preprocessing.
+
+    Returns extracted text or empty string if Tesseract is not installed.
+    """
+    try:
+        import pytesseract
+    except ImportError:
+        log.warning("pytesseract not installed. OCR skipped. Install: pip install pytesseract")
+        return ""
+
+    try:
+        # Auto-detect Tesseract on Windows if not in PATH
+        if sys.platform == 'win32':
+            tesseract_path = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+            if os.path.exists(tesseract_path):
+                pytesseract.pytesseract.tesseract_cmd = tesseract_path
+
+        img = cv2.imread(image_path)
+        if img is None:
+            return ""
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        thresh = cv2.adaptiveThreshold(
+            gray, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, 11, 2
+        )
+        text = pytesseract.image_to_string(thresh, config='--psm 6')
+        # Sanitize output to avoid encoding errors
+        return text.encode('ascii', errors='ignore').decode('ascii').strip()
+    except Exception as e:
+        log.warning("OCR failed on %s: %s", image_path, e)
+        return ""
+
+
+def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies_path: str, enable_ocr: bool = False) -> list:
     is_youtube = bool(extract_video_id(url))
 
     ydl_opts = {
@@ -647,6 +826,7 @@ def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies
         ydl_opts['cookiefile'] = cookies_path
 
     log.info("Extracting streaming source URL...")
+    log.info("PROGRESS: Connecting to video source...")
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         stream_url = info.get('url')
@@ -667,6 +847,7 @@ def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies
             "  - Try adding cookies.txt for authenticated content"
         ]
 
+    log.info("PROGRESS: Opening video stream with OpenCV...")
     log.info("Connecting OpenCV to stream URL: %s...", stream_url[:60])
     cap = cv2.VideoCapture(stream_url)
 
@@ -696,8 +877,9 @@ def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies
         success_count = 0
         payload = []
 
-        for sec in sorted(timestamps_secs):
+        for idx, sec in enumerate(sorted(timestamps_secs), 1):
             target_frame_idx = int(sec * fps)
+            log.info("PROGRESS: Capturing frame %d/%d at %ss...", idx, len(timestamps_secs), sec)
             log.info("Seeking to %ss (Frame %d out of %d)...", sec, target_frame_idx, total_frames)
 
             if target_frame_idx >= total_frames:
@@ -714,6 +896,12 @@ def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies
                 cv2.imwrite(temp_img_path, resized_frame)
 
                 payload.append(Image(path=temp_img_path))
+
+                if enable_ocr:
+                    ocr_text = extract_text_from_frame(temp_img_path)
+                    if ocr_text:
+                        payload.append(f"[OCR at {sec}s]:\n{ocr_text}")
+
                 success_count += 1
                 log.info("Frame at %ss captured successfully.", sec)
             else:
@@ -734,7 +922,7 @@ def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies
 
 
 @mcp.tool()
-async def get_ocular_audio_video_screenshots(url: str, timestamps_secs: list[int]) -> list:
+async def get_ocular_audio_video_screenshots(url: str, timestamps_secs: list[int], enable_ocr: bool = False) -> list:
     """
     Extracts high-quality, low-resolution screenshots at specific timestamps directly from any YouTube or Web video
     WITHOUT downloading the entire file (uses HTTP range-seeking streaming).
@@ -744,12 +932,13 @@ async def get_ocular_audio_video_screenshots(url: str, timestamps_secs: list[int
     Args:
         url: The full YouTube or Web video URL.
         timestamps_secs: A list of timestamps in seconds to screenshot (e.g., [45, 120, 300])
+        enable_ocr: If True, run OCR on each captured frame to extract visible text.
     """
     cookies_path = find_cookies_file()
 
     try:
         payload = await asyncio.wait_for(
-            asyncio.to_thread(_blocking_screenshot_extractor, url, timestamps_secs, cookies_path),
+            asyncio.to_thread(_blocking_screenshot_extractor, url, timestamps_secs, cookies_path, enable_ocr),
             timeout=NETWORK_TIMEOUT
         )
         return payload
@@ -801,10 +990,189 @@ def _build_transcript_text(cached_data: dict = None, transcript_text: str = None
 
 
 @mcp.tool()
+async def get_ocular_audio_capabilities() -> str:
+    """
+    Returns system capabilities and dependency status.
+
+    Use this tool to check what features are available before making other requests.
+    Returns information about Python, FFmpeg, Whisper, Tesseract, OpenCV, and cookie status.
+    """
+    log.info("Checking system capabilities...")
+    caps = _check_system_capabilities()
+
+    output = [
+        "[SYSTEM CAPABILITIES]",
+        f"Python: {caps['python_version']}",
+        f"FFmpeg: {'Available' if caps['ffmpeg'] else 'NOT FOUND - Required for video processing'}",
+        f"OpenCV: {'Available' if caps['opencv'] else 'NOT FOUND - Required for screenshots'}",
+        f"Whisper: {'Available (' + caps['whisper']['engine'] + ', model: ' + caps['whisper']['model_size'] + ')' if caps['whisper']['available'] else 'NOT FOUND - Optional for local transcription'}",
+        f"Tesseract OCR: {'Available at ' + caps['tesseract']['path'] if caps['tesseract']['available'] else 'NOT FOUND - Optional for text extraction (--ocr flag)'}",
+        f"Cookies File: {'Found' if caps['cookies_found'] else 'Not found (optional, needed for age-restricted videos)'}",
+        f"Cache Directory: {caps['cache_dir']}",
+    ]
+
+    return "\n".join(output)
+
+
+@mcp.tool()
+async def get_ocular_audio_metadata(url: str) -> str:
+    """
+    Extracts only video metadata (title, creator, duration, views, chapters) without transcript.
+
+    Use this when you need quick video info without the full transcript.
+    Much faster than get_ocular_audio_transcript if you only need metadata.
+    """
+    log.info("Fetching metadata for: %s", url)
+    video_id = extract_video_id(url)
+    is_youtube = bool(video_id)
+    cache_id = video_id if is_youtube else "".join([c if c.isalnum() else "_" for c in url[-20:]])
+    cookies_path = find_cookies_file()
+
+    # Check cache first
+    cached_data = read_from_cache(cache_id)
+    if cached_data:
+        log.info("Cache hit for metadata: %s", cache_id)
+        meta = cached_data.get("metadata", {})
+    else:
+        try:
+            metadata = await asyncio.wait_for(
+                asyncio.to_thread(_blocking_metadata_fetch, url, cookies_path),
+                timeout=NETWORK_TIMEOUT
+            )
+            meta = metadata
+        except asyncio.TimeoutError:
+            log.error("Metadata fetch timed out after %ds", NETWORK_TIMEOUT)
+            return "[ERROR] Metadata fetch timed out. Check your network connection."
+        except Exception as e:
+            log.warning("Metadata fetch failed: %s", e)
+            return f"[ERROR] Failed to fetch metadata: {str(e)}"
+
+    chapters = meta.get("chapters", [])
+    chapters_section = "\n".join(chapters) if chapters else "None available"
+
+    output = [
+        "[VIDEO METADATA]",
+        f"Title: {meta.get('title', 'Unknown')}",
+        f"Creator: {meta.get('uploader', 'Unknown')}",
+        f"Duration: {meta.get('duration', 'Unknown')}",
+        f"Views: {(meta.get('views') or 0):,}",
+        f"Upload Date: {meta.get('upload_date', 'N/A')}",
+        f"URL: {url}",
+        "",
+        "CHAPTERS:",
+        chapters_section,
+    ]
+
+    return "\n".join(output)
+
+
+@mcp.tool()
+async def get_ocular_audio_chapters(url: str) -> str:
+    """
+    Extracts only video chapters with timestamps.
+
+    Use this when you need to understand the video structure without getting the full transcript.
+    Returns chapter titles with start times in [MM:SS] format.
+    """
+    log.info("Fetching chapters for: %s", url)
+    video_id = extract_video_id(url)
+    is_youtube = bool(video_id)
+    cache_id = video_id if is_youtube else "".join([c if c.isalnum() else "_" for c in url[-20:]])
+    cookies_path = find_cookies_file()
+
+    # Check cache first
+    cached_data = read_from_cache(cache_id)
+    if cached_data:
+        meta = cached_data.get("metadata", {})
+    else:
+        try:
+            meta = await asyncio.wait_for(
+                asyncio.to_thread(_blocking_metadata_fetch, url, cookies_path),
+                timeout=NETWORK_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            return "[ERROR] Metadata fetch timed out."
+        except Exception as e:
+            return f"[ERROR] Failed to fetch chapters: {str(e)}"
+
+    chapters = meta.get("chapters", [])
+    if not chapters:
+        output = [
+            "[VIDEO CHAPTERS]",
+            f"Title: {meta.get('title', 'Unknown')}",
+            f"URL: {url}",
+            "",
+            "No chapters available for this video.",
+        ]
+    else:
+        output = [
+            "[VIDEO CHAPTERS]",
+            f"Title: {meta.get('title', 'Unknown')}",
+            f"URL: {url}",
+            f"Total Chapters: {len(chapters)}",
+            "",
+            "CHAPTERS:",
+            "\n".join(chapters),
+        ]
+
+    return "\n".join(output)
+
+
+@mcp.tool()
+async def list_ocular_audio_cache() -> str:
+    """
+    Lists all cached videos with their metadata.
+
+    Shows video titles, uploaders, duration, and when they were cached.
+    Use this to see what videos have been previously processed.
+    """
+    log.info("Listing cached videos...")
+    videos = _get_cache_list()
+
+    if not videos:
+        return "[CACHE] No cached videos found.\nCache directory: " + str(CACHE_DIR)
+
+    output = [f"[CACHE] {len(videos)} cached video(s):", ""]
+    for i, v in enumerate(videos, 1):
+        cached_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(v["cached_at"])) if v["cached_at"] else "unknown"
+        output.append(f"{i}. {v['title']}")
+        output.append(f"   Creator: {v['uploader']}")
+        output.append(f"   Duration: {v['duration']}")
+        output.append(f"   Method: {v['method']}")
+        output.append(f"   Cached: {cached_time}")
+        output.append(f"   ID: {v['id']}")
+        output.append("")
+
+    return "\n".join(output)
+
+
+@mcp.tool()
+async def clear_ocular_audio_cache(video_id: str = "") -> str:
+    """
+    Clears cached video data.
+
+    Args:
+        video_id: Optional video ID to clear specific video. If empty, clears all cache.
+    """
+    if video_id:
+        log.info("Clearing cache for video: %s", video_id)
+        result = _clear_cache(video_id)
+        if result["cleared"] > 0:
+            return f"[CACHE] Cleared cache for video: {video_id}"
+        else:
+            return f"[CACHE] Video {video_id} not found in cache."
+    else:
+        log.info("Clearing all cache...")
+        result = _clear_cache()
+        return f"[CACHE] {result['message']}"
+
+
+@mcp.tool()
 async def get_ocular_audio_video_context(
     url: str,
     detail_level: str = "auto",
-    use_local_whisper: bool = True
+    use_local_whisper: bool = True,
+    enable_ocr: bool = False
 ) -> list:
     """
     Extracts transcript, metadata, and optional intelligent screenshots from a video.
@@ -822,6 +1190,7 @@ async def get_ocular_audio_video_context(
         url: The full YouTube or Web video URL.
         detail_level: Control how much visual content to extract ("auto", "overview", "balanced", "deep").
         use_local_whisper: Enable offline local transcribing fallback.
+        enable_ocr: If True, run OCR on captured screenshots to extract visible text.
     """
     valid_modes = ("auto", "overview", "balanced", "deep")
     if detail_level not in valid_modes:
@@ -974,7 +1343,7 @@ async def get_ocular_audio_video_context(
     log.info("Capturing %d screenshots at: %s", len(timestamps_secs), timestamps_secs)
 
     screenshot_payload = await asyncio.wait_for(
-        asyncio.to_thread(_blocking_screenshot_extractor, url, timestamps_secs, cookies_path),
+        asyncio.to_thread(_blocking_screenshot_extractor, url, timestamps_secs, cookies_path, enable_ocr),
         timeout=NETWORK_TIMEOUT
     )
 
@@ -1030,16 +1399,122 @@ def copy_to_clipboard_native(text: str) -> bool:
 
 
 if __name__ == "__main__":
+    # Handle --check mode (no URL required)
+    if "--check" in sys.argv:
+        caps = _check_system_capabilities()
+        print("[SYSTEM CAPABILITIES]")
+        print(f"Python: {caps['python_version']}")
+        print(f"FFmpeg: {'OK' if caps['ffmpeg'] else 'MISSING'}")
+        print(f"OpenCV: {'OK' if caps['opencv'] else 'MISSING'}")
+        if caps['whisper']['available']:
+            print(f"Whisper: OK ({caps['whisper']['engine']}, model: {caps['whisper']['model_size']})")
+        else:
+            print("Whisper: MISSING (optional)")
+        if caps['tesseract']['available']:
+            print(f"Tesseract OCR: OK ({caps['tesseract']['path']})")
+        else:
+            print("Tesseract OCR: MISSING (optional)")
+        print(f"Cookies: {'Found' if caps['cookies_found'] else 'Not found'}")
+        print(f"Cache: {caps['cache_dir']}")
+        sys.exit(0)
+
     if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
         target_url = sys.argv[1]
         detail_level = sys.argv[2] if len(sys.argv) > 2 else "auto"
 
+        # Parse output control flags
+        no_clipboard = "--no-clipboard" in sys.argv
+        json_output = "--json" in sys.argv
+        stdout_mode = "--stdout" in sys.argv
+        enable_ocr = "--ocr" in sys.argv
+        force_mode = "--force" in sys.argv
+        verbose_mode = "--verbose" in sys.argv
+        quiet_mode = "--quiet" in sys.argv
+        output_file = None
+        for i, arg in enumerate(sys.argv):
+            if arg == "--output" and i + 1 < len(sys.argv):
+                output_file = sys.argv[i + 1]
+
+        # Set logging level based on verbosity
+        if quiet_mode:
+            logging.getLogger().setLevel(logging.WARNING)
+        elif verbose_mode:
+            logging.getLogger().setLevel(logging.DEBUG)
+
         async def run_standalone():
+            start_time = time.time()
             log.info("Processing target resource: %s (detail: %s)", target_url, detail_level)
+
+            # ── JSON mode: call underlying functions for structured data ─────
+            if json_output:
+                import json as _json
+                video_id = extract_video_id(target_url)
+                is_youtube = bool(video_id)
+                cookies_path = find_cookies_file()
+                cached = read_from_cache(video_id) if video_id and not force_mode else None
+                if cached:
+                    meta = cached.get("metadata", {})
+                    transcript = cached.get("transcript", "")
+                else:
+                    meta = await asyncio.to_thread(_blocking_metadata_fetch, target_url, cookies_path)
+                    transcript_text = None
+                    if is_youtube:
+                        try:
+                            session = get_authenticated_session(cookies_path)
+                            def fetch_captions():
+                                api = YouTubeTranscriptApi(http_client=session)
+                                return api.fetch(video_id)
+                            transcript_list = await asyncio.wait_for(
+                                asyncio.to_thread(fetch_captions),
+                                timeout=NETWORK_TIMEOUT
+                            )
+                            formatted_segments = []
+                            for entry in transcript_list:
+                                timestamp = format_seconds(entry.start)
+                                formatted_segments.append(f"{timestamp} {entry.text}")
+                            transcript_text = "\n".join(formatted_segments)
+                        except Exception:
+                            transcript_text = None
+                    if not transcript_text:
+                        try:
+                            target_param = video_id if is_youtube else target_url
+                            transcript_text = await asyncio.wait_for(
+                                asyncio.to_thread(_blocking_whisper_transcription, target_param, cookies_path),
+                                timeout=NETWORK_TIMEOUT
+                            )
+                        except Exception:
+                            transcript_text = "(transcription unavailable)"
+                    transcript = transcript_text or ""
+                    if video_id:
+                        write_to_cache(video_id, {
+                            "metadata": meta,
+                            "transcript": transcript,
+                            "method": "official_captions" if transcript_text and transcript_text != "(transcription unavailable)" else "local_whisper_fallback",
+                            "timestamp": time.time(),
+                        })
+
+                json_data = {
+                    "video_id": video_id,
+                    "url": target_url,
+                    "metadata": {
+                        "title": meta.get("title", "Unknown"),
+                        "uploader": meta.get("uploader", "Unknown"),
+                        "duration": meta.get("duration", "Unknown"),
+                        "views": meta.get("views", 0),
+                        "upload_date": meta.get("upload_date", ""),
+                        "chapters": meta.get("chapters", []),
+                    },
+                    "transcript": transcript,
+                }
+                print(_json.dumps(json_data, indent=2))
+                return
+
+            # ── Normal mode: call the all-in-one context tool ────────────────
             res = await get_ocular_audio_video_context(
                 url=target_url,
                 detail_level=detail_level,
-                use_local_whisper=True
+                use_local_whisper=True,
+                enable_ocr=enable_ocr
             )
 
             output_lines = []
@@ -1051,21 +1526,60 @@ if __name__ == "__main__":
 
             prompt_context = "\n".join(output_lines)
 
-            success = copy_to_clipboard_native(prompt_context)
+            # Sanitize output to remove non-ASCII characters that may cause encoding errors
+            prompt_context = prompt_context.encode('ascii', errors='ignore').decode('ascii')
 
-            print("=" * 60)
-            if success:
-                print("[SUCCESS: Context Copied to Clipboard]")
-                print("[INSTRUCTION: Paste the clipboard contents inside Claude Web/ChatGPT]")
-            else:
-                output_file = "video_context.txt"
+            # Print transcript to stdout (always, so CLI wrapper can capture it)
+            try:
+                print(prompt_context)
+            except UnicodeEncodeError:
+                # Fallback: encode with replacement
+                print(prompt_context.encode('ascii', errors='replace').decode('ascii'))
+
+            # ── Output control ──────────────────────────────────────────────
+            if stdout_mode:
+                # stdout-only mode, no clipboard or file write
+                pass
+            elif output_file:
+                # Write to specific file
                 with open(output_file, "w", encoding="utf-8") as f:
                     f.write(prompt_context)
-                print("[SUCCESS: Transcribed Successfully]")
-                print(f"[INFO: Saved context block to: {os.path.abspath(output_file)}]")
-                print("[INSTRUCTION: Upload or copy the contents of the text file directly into your Web AI model]")
-            print("=" * 60)
+                print("\n" + "=" * 60)
+                print(f"[SUCCESS: Saved to {output_file}]")
+                print("=" * 60)
+            elif not no_clipboard:
+                # Default: try clipboard, fallback to file
+                success = copy_to_clipboard_native(prompt_context)
+                print("\n" + "=" * 60)
+                if success:
+                    print("[SUCCESS: Context Copied to Clipboard]")
+                    print("[INSTRUCTION: Paste into Claude Web/ChatGPT]")
+                else:
+                    fallback_path = os.path.join(os.getcwd(), "video_context.txt")
+                    with open(fallback_path, "w", encoding="utf-8") as f:
+                        f.write(prompt_context)
+                    print("[SUCCESS: Transcribed Successfully]")
+                    print(f"[INFO: Saved to {fallback_path}]")
+                print("=" * 60)
 
-        asyncio.run(run_standalone())
+            # Print summary line
+            elapsed = time.time() - start_time
+            screenshot_count = sum(1 for item in res if hasattr(item, 'path'))
+            ocr_count = sum(1 for item in res if isinstance(item, str) and item.startswith("[OCR"))
+            if not quiet_mode:
+                print(f"\n[SUMMARY] Processed in {elapsed:.1f}s | {screenshot_count} screenshots | {ocr_count} OCR results")
+
+        try:
+            asyncio.run(run_standalone())
+        except KeyboardInterrupt:
+            print("\n[INFO] Interrupted by user.", file=sys.stderr)
+            sys.exit(130)
+        except UnicodeEncodeError:
+            # Handle encoding errors at the top level
+            print("[ERROR] Output contains characters that cannot be encoded. Try --stdout flag.", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"\n[ERROR] {type(e).__name__}: {e}", file=sys.stderr)
+            sys.exit(1)
     else:
         mcp.run()
