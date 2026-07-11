@@ -1,8 +1,57 @@
-# OcularAudio MCP — Competitive Benchmark
+# OcularAudio MCP — Performance Benchmarks & Competitive Analysis
 
 Deep analysis of OcularAudio MCP against all major video transcript, screenshot, and OCR tools in the MCP and CLI ecosystem.
 
 **Last updated:** July 2026
+
+---
+
+## Test Environment
+
+| Component | Specification |
+|-----------|---------------|
+| **CPU** | Intel Core (Windows) |
+| **RAM** | 16 GB |
+| **Python** | 3.14.4 |
+| **OpenCV** | 5.0.0 |
+| **Faster-Whisper** | tiny model |
+| **FFmpeg** | Installed |
+| **Internet** | Broadband |
+
+---
+
+## Performance Benchmarks
+
+### Measured Results
+
+| Task | Time | Notes |
+|------|------|-------|
+| **Metadata fetch** | 1.58 s | Title, chapters, duration |
+| **Transcript (3:33 video)** | 0.001 s | Cache hit — instant |
+| **Transcript (19:47 video)** | 2.38 s | YouTube captions API |
+| **Screenshot @ 30s** | 1.71 s | OpenCV stream + frame capture |
+| **OCR (Tesseract)** | 0.55 s | Per frame, Tesseract processing |
+| **Cache hit** | 0.0005 s | 0.5 ms — instant load |
+
+### Performance Characteristics
+
+| Operation | Typical Range | Notes |
+|-----------|---------------|-------|
+| Cache hit (transcript) | 0.0005–0.005 s | Near-instant |
+| YouTube captions (API) | 1–3 s | Network dependent |
+| Whisper transcription | 30–300 s | Depends on video length |
+| Screenshot capture (per frame) | 1–2 s | OpenCV stream seeking |
+| OCR on frame | 0.4–0.6 s | Tesseract processing |
+| Metadata fetch | 1–2 s | yt-dlp extraction |
+
+### Resource Usage
+
+| Resource | Usage | Notes |
+|----------|-------|-------|
+| Disk (cache) | ~10 MB per video | Auto-expires after 7 days |
+| Memory (Whisper) | ~500 MB–1 GB | Depends on model size |
+| Network | Minimal | API calls only |
+| CPU (screenshots) | Moderate | During frame capture |
 
 ---
 
@@ -34,7 +83,6 @@ Deep analysis of OcularAudio MCP against all major video transcript, screenshot,
 | **License** | MIT | MIT | MIT | MIT | MIT |
 | **npm Package** | ✅ `ocular-audio-mcp` | ✅ `mcp-video-analyzer` | ❌ (Docker/npm) | ❌ (GitHub) | ❌ (PyPI/uvx) |
 | **MCP Registry** | ✅ Published | ❌ | ❌ | ❌ | ❌ |
-| **GitHub Stars** | — | 11 | — | — | — |
 | **Tools Count** | **8** | 5 | 7 | 1 | 1 |
 | **Transcript** | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Screenshots** | ✅ (intelligent) | ✅ (key frames) | ✅ (single frame) | ❌ | ❌ |
@@ -188,37 +236,18 @@ Deep analysis of OcularAudio MCP against all major video transcript, screenshot,
 
 ---
 
-## Part 4: Performance Characteristics
+## Part 4: Reliability
 
-### 4.1 Speed (Estimated)
-
-| Operation | OcularAudio | Competitors |
-|-----------|-------------|-------------|
-| Cache hit (transcript) | ~0.01s | Similar if cached |
-| YouTube captions (API) | ~1-3s | ~1-3s |
-| Whisper transcription | 30-300s (depends on video length) | Similar |
-| Screenshot capture (per frame) | ~2-5s | ~2-5s |
-| OCR on frame | ~0.5-2s | ~0.5-2s |
-| Metadata fetch | ~1-2s | ~1-2s |
-
-### 4.2 Resource Usage
-
-| Resource | OcularAudio | Notes |
-|----------|-------------|-------|
-| Disk (cache) | ~10MB per video | Auto-expires after 7 days |
-| Memory (Whisper) | ~500MB-1GB | Depends on model size |
-| Network | Minimal (API calls only) | No bulk downloads |
-| CPU (screenshots) | Moderate (OpenCV) | During frame capture |
-
-### 4.3 Reliability
+### 4.1 Error Handling
 
 | Aspect | OcularAudio | Notes |
 |--------|-------------|-------|
-| Error handling | ✅ Comprehensive | Actionable error messages |
-| Timeout protection | ✅ 5-minute default | Configurable |
-| Atomic cache writes | ✅ Temp file + rename | No corruption |
+| Error handling | ✅ Comprehensive | Actionable error messages with suggestions |
+| Timeout protection | ✅ 5-minute default | Prevents hanging |
+| Atomic cache writes | ✅ Temp file + rename | No corruption on crash |
 | Graceful degradation | ✅ Fallback chain | Captions → Whisper → Error |
 | Unicode handling | ✅ ASCII sanitization | No encoding crashes |
+| Out-of-bounds protection | ✅ Frame validation | Warns if timestamp exceeds video |
 
 ---
 

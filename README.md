@@ -16,9 +16,7 @@ An asynchronous Model Context Protocol (MCP) server that gives AI models "eyes a
 
 ## Benchmark
 
-See [BENCHMARK.md](BENCHMARK.md) for a deep comparison against all major video transcript, screenshot, and OCR tools in the MCP and CLI ecosystem.
-
-**TL;DR:** OcularAudio MCP has **8 MCP tools** — more than any competitor. It's the only tool with intelligent screenshots, OCR, cache management via MCP, and CLI + MCP in one package.
+See [BENCHMARK.md](BENCHMARK.md) for performance benchmarks and a deep competitive analysis against all major video transcript, screenshot, and OCR tools in the MCP and CLI ecosystem.
 
 ## Requirements
 
