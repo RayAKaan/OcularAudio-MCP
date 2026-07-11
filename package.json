@@ -2,7 +2,7 @@
   "name": "ocular-audio-mcp",
   "version": "1.0.0",
   "description": "OcularAudio MCP: Advanced Async Multi-Platform Video Transcript & Screen Vision Server",
-  "main": "ocular_audio_mcp.py",
+  "main": "./bin/cli.js",
   "bin": {
     "ocular-audio": "./bin/cli.js"
   },
@@ -18,8 +18,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "clipboardy": "^4.0.0",
-    "commander": "^11.1.0"
+    "clipboardy": "^4.0.0"
   },
   "engines": {
     "node": ">=18.0.0"

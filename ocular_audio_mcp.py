@@ -9,6 +9,7 @@ import subprocess
 import http.cookiejar
 import logging
 from pathlib import Path
+from functools import lru_cache
 
 # Python version check (list[int] requires 3.9+)
 if sys.version_info < (3, 9):
@@ -32,6 +33,12 @@ log = logging.getLogger("ocular_audio_mcp")
 CACHE_DIR = Path(os.path.expanduser("~")) / ".cache" / "ocular_audio_mcp"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# Cache expiration: 7 days in seconds
+CACHE_MAX_AGE = 7 * 24 * 60 * 60
+
+# Timeout for blocking network operations (seconds)
+NETWORK_TIMEOUT = 300
+
 # Initialize the Model Context Protocol (MCP) server
 mcp = FastMCP(
     "OcularAudio Server",
@@ -46,27 +53,29 @@ def get_whisper_engine():
     if _whisper_engine is not None:
         return _whisper_engine
 
-    log.info("Initializing local transcription engine...")
+    model_size = os.environ.get("WHISPER_MODEL_SIZE", "tiny")
+    log.info("Initializing local transcription engine (model=%s)...", model_size)
     try:
         from faster_whisper import WhisperModel
         log.info("Using high-performance 'faster-whisper' engine.")
         _whisper_engine = {
             "type": "faster-whisper",
-            "model": WhisperModel("tiny", device="cpu", compute_type="int8")
+            "model": WhisperModel(model_size, device="cpu", compute_type="int8")
         }
         return _whisper_engine
-    except ImportError:
-        pass
+    except ImportError as e:
+        log.debug("faster-whisper not available: %s", e)
 
     try:
         import whisper
         log.info("Using standard 'openai-whisper' engine.")
         _whisper_engine = {
             "type": "openai-whisper",
-            "model": whisper.load_model("tiny")
+            "model": whisper.load_model(model_size)
         }
         return _whisper_engine
-    except ImportError:
+    except ImportError as e:
+        log.debug("openai-whisper not available: %s", e)
         raise ImportError(
             "No local ASR engines found. Please install one of the following:\n"
             "  pip install faster-whisper\n"
@@ -74,18 +83,19 @@ def get_whisper_engine():
         )
 
 
+@lru_cache(maxsize=1)
 def find_cookies_file() -> str:
     """Search for cookies.txt in known locations.
 
     Search order:
-      1. ./cookies.txt            (relative to current working directory)
-      2. ~/.cache/ocular_audio_mcp/cookies.txt
-      3. ~/.config/ocular_audio_mcp/cookies.txt
+      1. ~/.cache/ocular_audio_mcp/cookies.txt
+      2. ~/.config/ocular_audio_mcp/cookies.txt
+      3. ./cookies.txt (relative to current working directory)
     """
     search_paths = [
-        Path("./cookies.txt"),
         CACHE_DIR / "cookies.txt",
-        Path(os.path.expanduser("~")) / ".config" / "ocular_audio_mcp" / "cookies.txt"
+        Path(os.path.expanduser("~")) / ".config" / "ocular_audio_mcp" / "cookies.txt",
+        Path("./cookies.txt"),
     ]
     for path in search_paths:
         if path.exists():
@@ -97,7 +107,7 @@ def find_cookies_file() -> str:
 def get_authenticated_session(cookies_path: str) -> Session:
     session = Session()
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     })
     if cookies_path:
         try:
@@ -112,8 +122,7 @@ def get_authenticated_session(cookies_path: str) -> Session:
 
 def extract_video_id(url: str) -> str:
     patterns = [
-        r'(?:v=|\/)([0-9A-Za-z_-]{11}).*',
-        r'youtu\.be\/([0-9A-Za-z_-]{11})'
+        r'(?:v=|\/embed\/|\/v\/|youtu\.be\/)([0-9A-Za-z_-]{11})(?:\b|[&?/])',
     ]
     for pattern in patterns:
         match = re.search(pattern, url)
@@ -126,6 +135,7 @@ def _blocking_metadata_fetch(url: str, cookies_path: str) -> dict:
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
+        'socket_timeout': 30,
     }
     if cookies_path:
         ydl_opts['cookiefile'] = cookies_path
@@ -153,11 +163,11 @@ def _blocking_metadata_fetch(url: str, cookies_path: str) -> dict:
             duration_str = "Unknown"
 
         return {
-            "title": info.get("title", "Unknown Title"),
-            "uploader": info.get("uploader", "Unknown Creator"),
-            "views": info.get("view_count", 0),
+            "title": info.get("title") or "Unknown Title",
+            "uploader": info.get("uploader") or "Unknown Creator",
+            "views": info.get("view_count") or 0,
             "duration": duration_str,
-            "upload_date": info.get("upload_date", "N/A"),
+            "upload_date": info.get("upload_date") or "N/A",
             "chapters": formatted_chapters
         }
 
@@ -168,24 +178,219 @@ def format_seconds(seconds: float) -> str:
     return f"[{minutes:02d}:{secs:02d}]"
 
 
+def extract_key_timestamps(transcript: str, duration_secs: int, mode: str = "balanced") -> list[tuple[int, str, int]]:
+    """Analyze transcript and return key visual timestamps.
+
+    Returns list of (timestamp_secs, reason, score) tuples, sorted by timestamp.
+    Uses percentile-based selection for meaningful differentiation between modes.
+    """
+    lines = transcript.strip().split('\n')
+    segments = []
+    for line in lines:
+        match = re.match(r'\[(\d+):(\d+)\]\s*(.*)', line)
+        if match:
+            ts = int(match.group(1)) * 60 + int(match.group(2))
+            text = match.group(3).strip()
+            if text:
+                segments.append((ts, text))
+
+    if not segments:
+        return []
+
+    scored = []
+    for i, (ts, text) in enumerate(segments):
+        score = 0
+        reasons = []
+        lower = text.lower()
+
+        # === HIGH VALUE (5 points) ===
+        has_numbers = bool(re.search(r'\$\d+|₹\d+|\d+[\.,]?\d*\s*(%|percent|lakh|crore|k\b|m\b|billion|million)', text))
+        has_context = bool(re.search(r'(chart|graph|table|breakdown|compare|vs|versus|difference|average|total|revenue|profit|salary|cost|price|income|earn)', lower))
+
+        strong_cues = ['look at this', 'as you can see', 'check this out', 'let me show you',
+                       'right here', 'you can see', 'see this', 'notice this', 'observe this',
+                       'this is what', 'look here', 'see here']
+        has_visual_cue = False
+        for cue in strong_cues:
+            if cue in lower:
+                has_visual_cue = True
+                break
+
+        if has_numbers and has_context:
+            score += 5
+            reasons.append("numbers + context (chart/table likely)")
+        elif has_numbers and has_visual_cue:
+            score += 5
+            reasons.append("visual cue + numbers confirmed")
+        elif has_numbers:
+            score += 3
+            reasons.append("numbers/data detected")
+        elif has_visual_cue:
+            score += 2
+            reasons.append('visual cue (preview)')
+
+        # === MEDIUM VALUE (2-3 points) ===
+        comparisons = ['before vs after', 'difference between', 'compared to', 'versus',
+                       'expectation vs reality', 'vs', 'v/s', 'compare']
+        for comp in comparisons:
+            if comp in lower:
+                score += 3
+                reasons.append(f"comparison: {comp}")
+                break
+
+        if re.search(r'\b(first|second|third|fourth|fifth|number one|number two|number three)\b', lower):
+            score += 2
+            reasons.append("numbered list")
+        if re.search(r'\bstep\s*\d|point\s*\d|\d\)', lower):
+            score += 2
+            reasons.append("step/list")
+
+        emphasis = ['important', 'remember', 'key point', 'note that', 'keep in mind',
+                    'crucial', 'essential', 'must know', 'biggest mistake', 'watch out']
+        for phrase in emphasis:
+            if phrase in lower:
+                score += 2
+                reasons.append(f"emphasis: {phrase}")
+                break
+
+        # === LOW VALUE (1 point) ===
+        if i < len(segments) - 1:
+            next_ts = segments[i + 1][0]
+            if next_ts - ts > 10:
+                score += 1
+                reasons.append("topic transition")
+
+        if text.isupper() and len(text) > 5:
+            score += 1
+            reasons.append("emphasized")
+        if '!' in text:
+            score += 1
+            reasons.append("excited")
+
+        if i < len(segments) - 1:
+            seg_duration = segments[i + 1][0] - ts
+            if seg_duration > 15:
+                score += 1
+                reasons.append("extended")
+
+        if ts < 10:
+            score += 1
+            reasons.append("opening")
+        if duration_secs > 0 and ts > duration_secs - 30:
+            score += 1
+            reasons.append("closing")
+
+        if i > 0:
+            prev_ts = segments[i - 1][0]
+            if ts - prev_ts > 5:
+                score += 1
+                reasons.append("scene change")
+
+        if score > 0:
+            reason_str = "; ".join(reasons)
+            scored.append((ts, reason_str, score))
+
+    if not scored:
+        return []
+
+    # Cluster merging: compare against FIRST item to prevent unbounded growth
+    clusters = []
+    current_cluster = [scored[0]]
+    for item in scored[1:]:
+        if item[0] - current_cluster[0][0] <= 15:
+            current_cluster.append(item)
+        else:
+            clusters.append(current_cluster)
+            current_cluster = [item]
+    clusters.append(current_cluster)
+
+    # Pick highest-scoring from each cluster
+    best_per_cluster = []
+    for cluster in clusters:
+        best = max(cluster, key=lambda x: x[2])
+        best_per_cluster.append(best)
+
+    # Sort by score descending for percentile calculation
+    best_per_cluster.sort(key=lambda x: x[2], reverse=True)
+
+    # Apply percentile-based selection
+    total = len(best_per_cluster)
+    MAX_SCREENSHOTS = 50
+
+    if mode == "overview":
+        filtered = []
+    elif mode == "deep":
+        cutoff = max(1, min(int(total * 0.75), MAX_SCREENSHOTS))
+        filtered = best_per_cluster[:cutoff]
+    elif mode == "balanced":
+        cutoff = max(1, min(int(total * 0.25), MAX_SCREENSHOTS))
+        filtered = best_per_cluster[:cutoff]
+    elif mode == "auto":
+        minutes = duration_secs / 60 if duration_secs > 0 else 10
+        if minutes < 5:
+            cutoff = max(1, min(int(total * 0.50), MAX_SCREENSHOTS))
+        elif minutes < 30:
+            cutoff = max(1, min(int(total * 0.30), MAX_SCREENSHOTS))
+        else:
+            cutoff = max(1, min(int(total * 0.20), MAX_SCREENSHOTS))
+        filtered = best_per_cluster[:cutoff]
+    else:
+        log.warning("Unknown mode '%s', falling back to 'auto'", mode)
+        minutes = duration_secs / 60 if duration_secs > 0 else 10
+        cutoff = max(1, min(int(total * 0.30), MAX_SCREENSHOTS))
+        filtered = best_per_cluster[:cutoff]
+
+    # Sort filtered results by timestamp for chronological order
+    filtered.sort(key=lambda x: x[0])
+
+    log.info("Timestamp analysis: %d segments, %d clusters, %d scored, %d selected (mode=%s)",
+             len(segments), len(clusters), total, len(filtered), mode)
+    return filtered
+
+
 def read_from_cache(video_id: str) -> dict:
     cache_path = CACHE_DIR / f"{video_id}.json"
     if cache_path.exists():
         try:
+            # Check cache age
+            age = time.time() - cache_path.stat().st_mtime
+            if age > CACHE_MAX_AGE:
+                log.info("Cache expired for %s (%.0f days old)", video_id, age / 86400)
+                cache_path.unlink(missing_ok=True)
+                return None
+
+            # Check file size (10MB limit)
+            if cache_path.stat().st_size > 10 * 1024 * 1024:
+                log.warning("Cache file too large for %s, removing", video_id)
+                cache_path.unlink(missing_ok=True)
+                return None
+
             with open(cache_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except Exception:
-            pass
+        except json.JSONDecodeError as e:
+            log.warning("Corrupted cache for %s, removing: %s", video_id, e)
+            cache_path.unlink(missing_ok=True)
+        except Exception as e:
+            log.warning("Cache read failed for %s: %s", video_id, e)
     return None
 
 
-def write_to_cache(video_id: str, data: dict):
+def write_to_cache(video_id: str, data: dict) -> bool:
     cache_path = CACHE_DIR / f"{video_id}.json"
     try:
-        with open(cache_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        # Atomic write: write to temp file, then rename
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=CACHE_DIR, suffix='.tmp')
+        try:
+            with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, cache_path)
+            return True
+        except Exception:
+            os.unlink(tmp_path)
+            raise
     except Exception as e:
         log.warning("Failed to write cache for %s: %s", video_id, e)
+        return False
 
 
 def _blocking_whisper_transcription(url_or_id: str, cookies_path: str) -> str:
@@ -201,10 +406,11 @@ def _blocking_whisper_transcription(url_or_id: str, cookies_path: str) -> str:
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
-            'preferredquality': '96',
+            'preferredquality': '128',
         }],
         'quiet': True,
         'no_warnings': True,
+        'socket_timeout': 30,
     }
     if cookies_path:
         ydl_opts['cookiefile'] = cookies_path
@@ -228,22 +434,23 @@ def _blocking_whisper_transcription(url_or_id: str, cookies_path: str) -> str:
     log.info("Running Whisper speech-to-text offline locally...")
     formatted_segments = []
 
-    if engine["type"] == "faster-whisper":
-        segments, info = engine["model"].transcribe(audio_file_path, beam_size=3)
-        for segment in segments:
-            timestamp = format_seconds(segment.start)
-            formatted_segments.append(f"{timestamp} {segment.text.strip()}")
-    else:
-        result = engine["model"].transcribe(audio_file_path, language=None)
-        segments = result.get("segments", [])
-        for seg in segments:
-            timestamp = format_seconds(seg.get("start", 0))
-            formatted_segments.append(f"{timestamp} {seg.get('text', '').strip()}")
-
     try:
-        os.remove(audio_file_path)
-    except OSError:
-        pass
+        if engine["type"] == "faster-whisper":
+            segments, info = engine["model"].transcribe(audio_file_path, beam_size=3)
+            for segment in segments:
+                timestamp = format_seconds(segment.start)
+                formatted_segments.append(f"{timestamp} {segment.text.strip()}")
+        else:
+            result = engine["model"].transcribe(audio_file_path)
+            segments = result.get("segments", [])
+            for seg in segments:
+                timestamp = format_seconds(seg.get("start", 0))
+                formatted_segments.append(f"{timestamp} {seg.get('text', '').strip()}")
+    finally:
+        try:
+            os.remove(audio_file_path)
+        except OSError:
+            pass
 
     return "\n".join(formatted_segments)
 
@@ -283,7 +490,7 @@ async def get_ocular_audio_transcript(url: str, use_local_whisper: bool = True) 
             f"Title: {meta.get('title')}\n"
             f"Creator: {meta.get('uploader')}\n"
             f"Duration: {meta.get('duration')}\n"
-            f"Views: {meta.get('views'):,}\n"
+            f"Views: {(meta.get('views') or 0):,}\n"
             f"URL: {url}\n"
             f"CHAPTER STRUCTURE:\n{chapters_section}\n"
             f"==================================================\n\n"
@@ -293,7 +500,20 @@ async def get_ocular_audio_transcript(url: str, use_local_whisper: bool = True) 
     # 2. RUN METADATA FETCH
     log.info("Fetching video metadata and chapters asynchronously...")
     try:
-        metadata = await asyncio.to_thread(_blocking_metadata_fetch, url, cookies_path)
+        metadata = await asyncio.wait_for(
+            asyncio.to_thread(_blocking_metadata_fetch, url, cookies_path),
+            timeout=NETWORK_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        log.error("Metadata fetch timed out after %ds", NETWORK_TIMEOUT)
+        metadata = {
+            "title": f"Web Video (ID: {cache_id})",
+            "uploader": "Unknown",
+            "views": 0,
+            "duration": "N/A",
+            "upload_date": "N/A",
+            "chapters": []
+        }
     except Exception as e:
         log.warning("yt-dlp metadata fetch failed: %s", e)
         metadata = {
@@ -315,7 +535,10 @@ async def get_ocular_audio_transcript(url: str, use_local_whisper: bool = True) 
                 api = YouTubeTranscriptApi(http_client=session)
                 return api.fetch(video_id)
 
-            transcript_list = await asyncio.to_thread(fetch_captions)
+            transcript_list = await asyncio.wait_for(
+                asyncio.to_thread(fetch_captions),
+                timeout=NETWORK_TIMEOUT
+            )
 
             formatted_segments = []
             for entry in transcript_list:
@@ -337,7 +560,7 @@ async def get_ocular_audio_transcript(url: str, use_local_whisper: bool = True) 
                 f"Title: {metadata['title']}\n"
                 f"Creator: {metadata['uploader']}\n"
                 f"Duration: {metadata['duration']}\n"
-                f"Views: {metadata['views']:,}\n"
+                f"Views: {(metadata['views'] or 0):,}\n"
                 f"URL: {url}\n"
                 f"CHAPTER STRUCTURE:\n{chapters_section}\n"
                 f"==================================================\n\n"
@@ -358,7 +581,10 @@ async def get_ocular_audio_transcript(url: str, use_local_whisper: bool = True) 
     try:
         log.info("Starting local offline Whisper ASR in background thread...")
         target_param = video_id if is_youtube else url
-        transcript_text = await asyncio.to_thread(_blocking_whisper_transcription, target_param, cookies_path)
+        transcript_text = await asyncio.wait_for(
+            asyncio.to_thread(_blocking_whisper_transcription, target_param, cookies_path),
+            timeout=NETWORK_TIMEOUT
+        )
 
         write_to_cache(cache_id, {
             "metadata": metadata,
@@ -373,14 +599,22 @@ async def get_ocular_audio_transcript(url: str, use_local_whisper: bool = True) 
             f"Title: {metadata['title']}\n"
             f"Creator: {metadata['uploader']}\n"
             f"Duration: {metadata['duration']}\n"
-            f"Views: {metadata['views']:,}\n"
+            f"Views: {(metadata['views'] or 0):,}\n"
             f"URL: {url}\n"
             f"CHAPTER STRUCTURE:\n{chapters_section}\n"
             f"==================================================\n\n"
             + transcript_text
         )
 
+    except asyncio.TimeoutError:
+        log.error("Whisper transcription timed out after %ds", NETWORK_TIMEOUT)
+        return (
+            f"Error: Transcription timed out after {NETWORK_TIMEOUT} seconds.\n"
+            f"Video Title: {metadata.get('title', 'Unknown')}\n"
+            f"Suggestion: Try a shorter video or check your network connection."
+        )
     except ImportError as e:
+        log.error("Whisper engine not installed: %s", e)
         return (
             f"Error: Local transcription engine is not installed.\n"
             f"Details: {str(e)}\n"
@@ -389,6 +623,7 @@ async def get_ocular_audio_transcript(url: str, use_local_whisper: bool = True) 
             f"  pip install openai-whisper torch"
         )
     except Exception as whisper_error:
+        log.error("Whisper transcription failed: %s", whisper_error)
         return (
             f"Error: Local offline transcription failed.\n"
             f"Details: {str(whisper_error)}\n"
@@ -406,6 +641,7 @@ def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies
         'format': '18' if is_youtube else 'best',
         'quiet': True,
         'no_warnings': True,
+        'socket_timeout': 30,
     }
     if cookies_path:
         ydl_opts['cookiefile'] = cookies_path
@@ -434,59 +670,67 @@ def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies
     log.info("Connecting OpenCV to stream URL: %s...", stream_url[:60])
     cap = cv2.VideoCapture(stream_url)
 
-    if not cap.isOpened():
-        return [
-            "Error: Failed to open video stream with OpenCV.\n"
-            "Possible causes:\n"
-            "  - Video is no longer available\n"
-            "  - Network connection issue\n"
-            "  - FFmpeg codecs missing"
+    try:
+        if not cap.isOpened():
+            return [
+                "Error: Failed to open video stream with OpenCV.\n"
+                "Possible causes:\n"
+                "  - Video is no longer available\n"
+                "  - Network connection issue\n"
+                "  - FFmpeg codecs missing"
+            ]
+
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        log.info("Stream details: FPS=%s, Total Frames=%s", fps, total_frames)
+
+        if fps <= 0 or total_frames <= 0:
+            log.warning("Stream reported 0 FPS or 0 total frames. Using defaults.")
+            fps = 25.0
+            total_frames = 5000
+
+        temp_dir = tempfile.gettempdir()
+        video_id = extract_video_id(url)
+        cache_id = video_id if video_id else "".join([c if c.isalnum() else "_" for c in url[-20:]])
+
+        success_count = 0
+        payload = []
+
+        for sec in sorted(timestamps_secs):
+            target_frame_idx = int(sec * fps)
+            log.info("Seeking to %ss (Frame %d out of %d)...", sec, target_frame_idx, total_frames)
+
+            if target_frame_idx >= total_frames:
+                log.warning("Seek skipped: requested time %ss is out of video bounds.", sec)
+                payload.append(f"[WARNING: Requested timestamp {sec}s is beyond the end of the video.]")
+                continue
+
+            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame_idx)
+            ret, frame = cap.read()
+
+            if ret:
+                resized_frame = cv2.resize(frame, (640, 360))
+                temp_img_path = os.path.join(temp_dir, f"mcp_seek_{cache_id}_{sec}s.jpg")
+                cv2.imwrite(temp_img_path, resized_frame)
+
+                payload.append(Image(path=temp_img_path))
+                success_count += 1
+                log.info("Frame at %ss captured successfully.", sec)
+            else:
+                log.warning("Seek failed: OpenCV returned None for frame at %ss.", sec)
+                payload.append(f"[WARNING: Failed to seek or read frame at {sec} seconds.]")
+
+        # Build header after capture loop with actual count
+        header = [
+            f"[SUCCESS: Screenshot Extraction Completed]\n"
+            f"Successfully captured {success_count} of {len(timestamps_secs)} requested frames.\n"
+            f"The image content blocks are attached below in chronological order."
         ]
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    log.info("Stream details: FPS=%s, Total Frames=%s", fps, total_frames)
+        return header + payload
 
-    if fps <= 0 or total_frames <= 0:
-        log.warning("Stream reported 0 FPS or 0 total frames. Using defaults.")
-        fps = 25.0
-        total_frames = 5000
-
-    payload = [
-        f"[SUCCESS: Screenshot Extraction Completed]\n"
-        f"Successfully captured {len(timestamps_secs)} on-screen frames directly from the live feed.\n"
-        f"The image content blocks are attached below in chronological order."
-    ]
-
-    temp_dir = tempfile.gettempdir()
-    video_id = extract_video_id(url)
-    cache_id = video_id if video_id else "".join([c if c.isalnum() else "_" for c in url[-20:]])
-
-    for sec in sorted(timestamps_secs):
-        target_frame_idx = int(sec * fps)
-        log.info("Seeking to %ss (Frame %d out of %d)...", sec, target_frame_idx, total_frames)
-
-        if target_frame_idx >= total_frames:
-            log.warning("Seek skipped: requested time %ss is out of video bounds.", sec)
-            payload.append(f"[WARNING: Requested timestamp {sec}s is beyond the end of the video.]")
-            continue
-
-        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame_idx)
-        ret, frame = cap.read()
-
-        if ret:
-            resized_frame = cv2.resize(frame, (640, 360))
-            temp_img_path = os.path.join(temp_dir, f"mcp_seek_{cache_id}_{sec}s.jpg")
-            cv2.imwrite(temp_img_path, resized_frame)
-
-            payload.append(Image(path=temp_img_path))
-            log.info("Frame at %ss captured successfully.", sec)
-        else:
-            log.warning("Seek failed: OpenCV returned None for frame at %ss.", sec)
-            payload.append(f"[WARNING: Failed to seek or read frame at {sec} seconds.]")
-
-    cap.release()
-    return payload
+    finally:
+        cap.release()
 
 
 @mcp.tool()
@@ -504,10 +748,262 @@ async def get_ocular_audio_video_screenshots(url: str, timestamps_secs: list[int
     cookies_path = find_cookies_file()
 
     try:
-        payload = await asyncio.to_thread(_blocking_screenshot_extractor, url, timestamps_secs, cookies_path)
+        payload = await asyncio.wait_for(
+            asyncio.to_thread(_blocking_screenshot_extractor, url, timestamps_secs, cookies_path),
+            timeout=NETWORK_TIMEOUT
+        )
         return payload
+    except asyncio.TimeoutError:
+        return [f"Error: Screenshot extraction timed out after {NETWORK_TIMEOUT} seconds."]
     except Exception as e:
         return [f"Error during screenshot extraction: {str(e)}"]
+
+
+def _parse_duration_str(duration_str: str) -> int:
+    """Parse duration string like '14m 32s' or '1h 5m 32s' to seconds."""
+    total = 0
+    hour_match = re.search(r'(\d+)h', duration_str)
+    min_match = re.search(r'(\d+)m', duration_str)
+    sec_match = re.search(r'(\d+)s', duration_str)
+    if hour_match:
+        total += int(hour_match.group(1)) * 3600
+    if min_match:
+        total += int(min_match.group(1)) * 60
+    if sec_match:
+        total += int(sec_match.group(1))
+    if total == 0:
+        log.warning("Could not parse duration string: '%s'", duration_str)
+    return total
+
+
+def _build_transcript_text(cached_data: dict = None, transcript_text: str = None, metadata: dict = None, url: str = "") -> tuple[str, str, dict]:
+    """Build the transcript section from cached data or fresh fetch."""
+    if cached_data:
+        meta = cached_data.get("metadata", {})
+        transcript = cached_data.get("transcript", "")
+    else:
+        meta = metadata or {}
+        transcript = transcript_text or ""
+
+    chapters_list = meta.get("chapters", [])
+    chapters_section = "\n".join(chapters_list) if chapters_list else "None available"
+
+    header = (
+        f"Title: {meta.get('title', 'Unknown')}\n"
+        f"Creator: {meta.get('uploader', 'Unknown')}\n"
+        f"Duration: {meta.get('duration', 'Unknown')}\n"
+        f"Views: {(meta.get('views') or 0):,}\n"
+        f"URL: {url}\n"
+        f"CHAPTER STRUCTURE:\n{chapters_section}\n"
+        f"==================================================\n\n"
+    )
+    return header, transcript, meta
+
+
+@mcp.tool()
+async def get_ocular_audio_video_context(
+    url: str,
+    detail_level: str = "auto",
+    use_local_whisper: bool = True
+) -> list:
+    """
+    Extracts transcript, metadata, and optional intelligent screenshots from a video.
+
+    Automatically analyzes the transcript to find visually important moments
+    and captures screenshots at those timestamps. Returns everything combined.
+
+    Modes:
+      - "auto" (default): Adapts screenshot count to video length and content importance.
+      - "overview": Transcript and metadata only, no screenshots. Fastest.
+      - "balanced": Captures screenshots only at visually important moments (strong signals).
+      - "deep": Captures screenshots at every visually significant moment (all signals).
+
+    Args:
+        url: The full YouTube or Web video URL.
+        detail_level: Control how much visual content to extract ("auto", "overview", "balanced", "deep").
+        use_local_whisper: Enable offline local transcribing fallback.
+    """
+    valid_modes = ("auto", "overview", "balanced", "deep")
+    if detail_level not in valid_modes:
+        log.warning("Invalid detail_level '%s', falling back to 'auto'.", detail_level)
+        detail_level = "auto"
+
+    video_id = extract_video_id(url)
+    is_youtube = bool(video_id)
+    cache_id = video_id if is_youtube else "".join([c if c.isalnum() else "_" for c in url[-20:]])
+    cookies_path = find_cookies_file()
+
+    # 1. CHECK CACHE
+    cached_data = read_from_cache(cache_id)
+    transcript_text = ""
+    metadata = {}
+
+    if cached_data:
+        log.info("Cache hit for %s.", cache_id)
+        header, transcript_text, metadata = _build_transcript_text(cached_data=cached_data, url=url)
+    else:
+        # 2. FETCH METADATA
+        log.info("Fetching video metadata...")
+        try:
+            metadata = await asyncio.wait_for(
+                asyncio.to_thread(_blocking_metadata_fetch, url, cookies_path),
+                timeout=NETWORK_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            log.error("Metadata fetch timed out after %ds", NETWORK_TIMEOUT)
+            metadata = {
+                "title": f"Web Video (ID: {cache_id})",
+                "uploader": "Unknown",
+                "views": 0,
+                "duration": "N/A",
+                "upload_date": "N/A",
+                "chapters": []
+            }
+        except Exception as e:
+            log.warning("Metadata fetch failed: %s", e)
+            metadata = {
+                "title": f"Web Video (ID: {cache_id})",
+                "uploader": "Unknown",
+                "views": 0,
+                "duration": "N/A",
+                "upload_date": "N/A",
+                "chapters": []
+            }
+
+        # 3. FETCH TRANSCRIPT
+        if is_youtube:
+            try:
+                log.info("Querying YouTube captions...")
+                session = get_authenticated_session(cookies_path)
+
+                def fetch_captions():
+                    api = YouTubeTranscriptApi(http_client=session)
+                    return api.fetch(video_id)
+
+                transcript_list = await asyncio.wait_for(
+                    asyncio.to_thread(fetch_captions),
+                    timeout=NETWORK_TIMEOUT
+                )
+                formatted_segments = []
+                for entry in transcript_list:
+                    timestamp = format_seconds(entry.start)
+                    formatted_segments.append(f"{timestamp} {entry.text}")
+                transcript_text = "\n".join(formatted_segments)
+
+                write_to_cache(cache_id, {
+                    "metadata": metadata,
+                    "transcript": transcript_text,
+                    "method": "official_captions",
+                    "timestamp": time.time()
+                })
+            except asyncio.TimeoutError:
+                log.error("Caption fetch timed out after %ds", NETWORK_TIMEOUT)
+            except Exception as e:
+                log.info("Caption API failed: %s, trying Whisper...", e)
+                if use_local_whisper:
+                    try:
+                        target_param = video_id if is_youtube else url
+                        transcript_text = await asyncio.wait_for(
+                            asyncio.to_thread(_blocking_whisper_transcription, target_param, cookies_path),
+                            timeout=NETWORK_TIMEOUT
+                        )
+                        write_to_cache(cache_id, {
+                            "metadata": metadata,
+                            "transcript": transcript_text,
+                            "method": "local_whisper_fallback",
+                            "timestamp": time.time()
+                        })
+                    except Exception as we:
+                        log.error("Whisper fallback failed: %s", we)
+                        return [f"Error: Transcript extraction failed. Details: {str(we)}"]
+                else:
+                    return ["Error: No captions available and Whisper fallback is disabled."]
+        elif use_local_whisper:
+            try:
+                transcript_text = await asyncio.wait_for(
+                    asyncio.to_thread(_blocking_whisper_transcription, url, cookies_path),
+                    timeout=NETWORK_TIMEOUT
+                )
+                write_to_cache(cache_id, {
+                    "metadata": metadata,
+                    "transcript": transcript_text,
+                    "method": "local_whisper_fallback",
+                    "timestamp": time.time()
+                })
+            except Exception as we:
+                log.error("Whisper transcription failed: %s", we)
+                return [f"Error: Transcript extraction failed. Details: {str(we)}"]
+        else:
+            return ["Error: No captions available and Whisper fallback is disabled."]
+
+        header, _, _ = _build_transcript_text(
+            transcript_text=transcript_text, metadata=metadata, url=url
+        )
+
+    # 4. OVERVIEW MODE — no screenshots
+    if detail_level == "overview":
+        return [
+            "[VIDEO CONTEXT - OVERVIEW]",
+            header,
+            "[TRANSCRIPT]",
+            transcript_text
+        ]
+
+    # 5. CALCULATE SCREENSHOT TIMESTAMPS
+    duration_secs = _parse_duration_str(metadata.get("duration", "0"))
+    if duration_secs == 0:
+        lines = transcript_text.strip().split('\n')
+        for line in reversed(lines):
+            match = re.match(r'\[(\d+):(\d+)\]', line)
+            if match:
+                duration_secs = int(match.group(1)) * 60 + int(match.group(2))
+                break
+
+    key_moments = extract_key_timestamps(transcript_text, duration_secs, mode=detail_level)
+
+    if not key_moments:
+        return [
+            "[VIDEO CONTEXT - NO VISUAL KEYPOINTS FOUND]",
+            header,
+            "[TRANSCRIPT]",
+            transcript_text
+        ]
+
+    # 6. CAPTURE SCREENSHOTS
+    timestamps_secs = [m[0] for m in key_moments]
+    log.info("Capturing %d screenshots at: %s", len(timestamps_secs), timestamps_secs)
+
+    screenshot_payload = await asyncio.wait_for(
+        asyncio.to_thread(_blocking_screenshot_extractor, url, timestamps_secs, cookies_path),
+        timeout=NETWORK_TIMEOUT
+    )
+
+    # 7. BUILD FINAL OUTPUT
+    keypoints_section = "\n".join(
+        f"  {format_seconds(ts)} — {reason} (score: {score})"
+        for ts, reason, score in key_moments
+    )
+
+    result = [
+        f"[VIDEO CONTEXT - TRANSCRIPT + VISUALS]",
+        f"Detail Level: {detail_level} ({len(key_moments)} screenshots captured)",
+        header,
+        "[VISUAL KEYPOINTS]",
+        keypoints_section,
+        "",
+        "[TRANSCRIPT]",
+        transcript_text,
+        "",
+        "[SCREENSHOTS]",
+    ]
+
+    for item in screenshot_payload:
+        if isinstance(item, str) and item.startswith("[WARNING"):
+            result.append(item)
+        elif hasattr(item, 'path'):
+            result.append(item)
+
+    return result
 
 
 def copy_to_clipboard_native(text: str) -> bool:
@@ -536,17 +1032,25 @@ def copy_to_clipboard_native(text: str) -> bool:
 if __name__ == "__main__":
     if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
         target_url = sys.argv[1]
+        detail_level = sys.argv[2] if len(sys.argv) > 2 else "auto"
 
         async def run_standalone():
-            log.info("Processing target resource: %s", target_url)
-            log.info("Fetching transcript and metadata asynchronously...")
-            res = await get_ocular_audio_transcript(target_url)
+            log.info("Processing target resource: %s (detail: %s)", target_url, detail_level)
+            res = await get_ocular_audio_video_context(
+                url=target_url,
+                detail_level=detail_level,
+                use_local_whisper=True
+            )
 
-            prompt_context = f"""Please analyze this video thoroughly using the verified video data, uploader chapters, and complete transcript provided below.
+            output_lines = []
+            for item in res:
+                if hasattr(item, 'path'):
+                    output_lines.append(f"[Screenshot saved: {item.path}]")
+                else:
+                    output_lines.append(str(item))
 
---- VIDEO CONTEXT ---
-{res}
-"""
+            prompt_context = "\n".join(output_lines)
+
             success = copy_to_clipboard_native(prompt_context)
 
             print("=" * 60)

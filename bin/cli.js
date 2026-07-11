@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
@@ -14,47 +13,90 @@ async function getClipboardy() {
 }
 
 const args = process.argv.slice(2);
-if (args.length === 0 || args[0] === '-h' || args[0] === '--help') {
-  console.log(`
+
+// Parse arguments
+let detailLevel = 'auto';
+let targetUrl = null;
+
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '-h' || args[i] === '--help') {
+    console.log(`
 OcularAudio MCP: Multi-Platform Video Transcript & Visual CLI
 
 Usage:
-  npx ocular-audio <video_url>
+  npx ocular-audio [options] <video_url>
 
 Options:
-  -h, --help       Show this help message
-  -v, --version    Show version number
+  -h, --help              Show this help message
+  -v, --version           Show version number
+  --detail <level>        Set detail level: overview, balanced, deep, auto (default: auto)
+                            overview  - Transcript only, no screenshots (fastest)
+                            balanced  - Screenshots at key visual moments
+                            deep      - Screenshots at every important moment
+                            auto      - Adapts to video length and content (default)
 
 Examples:
   npx ocular-audio "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-  npx ocular-audio "https://vimeo.com/76979871"
+  npx ocular-audio --detail overview "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+  npx ocular-audio --detail deep "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 `);
-  process.exit(0);
+    process.exit(0);
+  }
+  if (args[i] === '-v' || args[i] === '--version') {
+    const pkg = require('../package.json');
+    console.log(pkg.version);
+    process.exit(0);
+  }
+  if (args[i] === '--detail' && i + 1 < args.length) {
+    const valid = ['overview', 'balanced', 'deep', 'auto'];
+    const val = args[i + 1].toLowerCase();
+    if (valid.includes(val)) {
+      detailLevel = val;
+    } else {
+      console.error(`[ERROR] Invalid detail level: ${args[i + 1]}`);
+      console.error(`  Valid options: ${valid.join(', ')}`);
+      process.exit(1);
+    }
+    i++; // skip the value
+    continue;
+  }
+  if (!args[i].startsWith('-')) {
+    targetUrl = args[i];
+  }
 }
 
-if (args[0] === '-v' || args[0] === '--version') {
-  const pkg = require('../package.json');
-  console.log(pkg.version);
-  process.exit(0);
+if (!targetUrl) {
+  console.error('[ERROR] No video URL provided.');
+  console.error('Usage: npx ocular-audio [options] <video_url>');
+  console.error('Run with --help for more information.');
+  process.exit(1);
 }
 
-const targetUrl = args[0];
+if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
+  console.error('[ERROR] Invalid URL. Must start with http:// or https://');
+  process.exit(1);
+}
+
 const pythonScriptPath = path.join(__dirname, '..', 'ocular_audio_mcp.py');
-
-// Detect Python command based on platform
 const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
 
 console.log(`[INFO] OcularAudio MCP CLI v${require('../package.json').version}`);
+console.log(`[INFO] Detail level: ${detailLevel}`);
 console.log(`[INFO] Executing Python backend...`);
 
-// Use spawn for better control over stdio and larger output handling
 const { spawn } = require('child_process');
 
-const pythonProcess = spawn(pythonCmd, [pythonScriptPath, targetUrl], {
+const pythonProcess = spawn(pythonCmd, [pythonScriptPath, targetUrl, detailLevel], {
   stdio: ['ignore', 'pipe', 'pipe'],
-  timeout: 300000, // 5 minute timeout
   windowsHide: true,
 });
+
+// Timeout after 5 minutes (spawn does not support timeout option)
+const SPAWN_TIMEOUT_MS = 5 * 60 * 1000;
+const timeoutId = setTimeout(() => {
+  console.error(`[ERROR] Process timed out after ${SPAWN_TIMEOUT_MS / 1000}s. Killing...`);
+  pythonProcess.kill('SIGTERM');
+}, SPAWN_TIMEOUT_MS);
 
 let stdout = '';
 let stderr = '';
@@ -68,6 +110,7 @@ pythonProcess.stderr.on('data', (data) => {
 });
 
 pythonProcess.on('error', (error) => {
+  clearTimeout(timeoutId);
   if (error.code === 'ENOENT') {
     console.error(`[ERROR] Python not found. Please install Python 3.9+ and ensure it's in your PATH.`);
     console.error(`  - Windows: Download from https://python.org`);
@@ -80,6 +123,7 @@ pythonProcess.on('error', (error) => {
 });
 
 pythonProcess.on('close', async (code) => {
+  clearTimeout(timeoutId);
   if (code !== 0) {
     console.error(`[ERROR] Python script exited with code ${code}`);
     if (stderr) {
@@ -92,10 +136,8 @@ pythonProcess.on('close', async (code) => {
     console.error(`[WARNINGS]: ${stderr}`);
   }
 
-  // Print the transcript output
   console.log(stdout);
 
-  // Build the prompt context for clipboard
   const formattedPrompt = `Please analyze this video thoroughly using the verified video data, uploader chapters, and complete transcript provided below.
 
 --- VIDEO CONTEXT ---

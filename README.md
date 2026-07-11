@@ -93,6 +93,8 @@ The transcript is automatically copied to your clipboard. Paste it into Claude W
 ```
 npx ocular-audio --help       # Show usage
 npx ocular-audio --version    # Show version
+npx ocular-audio --detail overview "URL"  # Transcript only
+npx ocular-audio --detail deep "URL"      # Maximum screenshots
 ```
 
 ## Cookie Setup (for age-restricted/private videos)
@@ -126,6 +128,19 @@ Captures screenshots at specific timestamps.
 **Parameters:**
 - `url` (string): Video URL
 - `timestamps_secs` (array of integers): Timestamps to capture (e.g., `[45, 120, 300]`)
+
+### `get_ocular_audio_video_context`
+
+Extracts transcript, metadata, and intelligent screenshots in one call. Automatically analyzes the transcript to find visually important moments and captures screenshots at those timestamps.
+
+**Parameters:**
+- `url` (string): Video URL
+- `detail_level` (string, default: "auto"): Controls screenshot capture mode:
+  - `"auto"` - Adapts to video length and content importance
+  - `"overview"` - Transcript and metadata only, no screenshots (fastest)
+  - `"balanced"` - Screenshots only at visually important moments (strong signals)
+  - `"deep"` - Screenshots at every visually significant moment (all signals)
+- `use_local_whisper` (boolean, default: true): Enable Whisper fallback if captions unavailable
 
 ## Troubleshooting
 
