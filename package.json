@@ -6,6 +6,13 @@
   "bin": {
     "ocular-audio": "./bin/cli.js"
   },
+  "files": [
+    "bin/",
+    "ocular_audio_mcp.py",
+    "requirements.txt",
+    "README.md",
+    "LICENSE"
+  ],
   "keywords": [
     "youtube",
     "mcp",
@@ -13,9 +20,16 @@
     "transcribe",
     "video-processing",
     "computer-vision",
-    "cli"
+    "cli",
+    "youtube-transcript",
+    "video-screenshots",
+    "faster-whisper"
   ],
-  "author": "",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RayAKaan/OcularAudio-MCP.git"
+  },
+  "author": "RayAKaan",
   "license": "MIT",
   "dependencies": {
     "clipboardy": "^4.0.0"
