@@ -10,48 +10,78 @@ Deep analysis of OcularAudio MCP against all major video transcript, screenshot,
 
 | Component | Specification |
 |-----------|---------------|
-| **CPU** | Intel Core (Windows) |
-| **RAM** | 16 GB |
-| **Python** | 3.14.4 |
+| **OS** | Windows 11 (10.0.26200) |
+| **CPU** | AMD Ryzen (Family 23, Model 113) |
+| **RAM** | 15.9 GB (4.3 GB available during test) |
+| **Python** | 3.14.4 (MSC v.1944, 64-bit) |
 | **OpenCV** | 5.0.0 |
-| **Faster-Whisper** | tiny model |
-| **FFmpeg** | Installed |
-| **Internet** | Broadband |
+| **Faster-Whisper** | tiny model (Systran/faster-whisper-tiny) |
+| **FFmpeg** | 8.1.1-essentials_build |
+| **Tesseract** | 5.x (C:\Program Files\Tesseract-OCR) |
+| **yt-dlp** | Latest |
+| **Network** | Broadband (86 MB/s download measured) |
 
 ---
 
 ## Performance Benchmarks
 
-### Measured Results
+### Core Operations
 
 | Task | Time | Notes |
 |------|------|-------|
-| **Metadata fetch** | 1.58 s | Title, chapters, duration |
-| **Transcript (3:33 video)** | 0.001 s | Cache hit — instant |
+| **Metadata fetch** | 1.58 s | Title, chapters, duration via yt-dlp |
+| **Transcript (cache hit)** | 0.0005 s | 0.5 ms — instant load from JSON |
+| **Transcript (3:33 video)** | 1.6 s | YouTube captions API |
 | **Transcript (19:47 video)** | 2.38 s | YouTube captions API |
-| **Screenshot @ 30s** | 1.71 s | OpenCV stream + frame capture |
+| **Whisper transcription (3:33)** | 45.4 s | Download audio + transcribe locally (tiny model) |
+| **Screenshot capture (per frame)** | 0.34 s | OpenCV stream seeking + frame capture |
+| **5 Screenshots** | 1.82 s | 5/5 frames captured successfully |
 | **OCR (Tesseract)** | 0.55 s | Per frame, Tesseract processing |
+| **Context (auto mode)** | 1.34 s | Transcript + 2 intelligent screenshots |
 | **Cache hit** | 0.0005 s | 0.5 ms — instant load |
 
-### Performance Characteristics
+### Concurrent Performance
 
-| Operation | Typical Range | Notes |
-|-----------|---------------|-------|
-| Cache hit (transcript) | 0.0005–0.005 s | Near-instant |
-| YouTube captions (API) | 1–3 s | Network dependent |
-| Whisper transcription | 30–300 s | Depends on video length |
-| Screenshot capture (per frame) | 1–2 s | OpenCV stream seeking |
-| OCR on frame | 0.4–0.6 s | Tesseract processing |
-| Metadata fetch | 1–2 s | yt-dlp extraction |
+| Scenario | Time | Notes |
+|----------|------|-------|
+| **3 concurrent transcripts** | 2.45 s | 3/3 succeeded, parallel execution |
+| **Sequential equivalent** | ~4.8 s | Estimated (3 × 1.6 s) |
+| **Parallelization speedup** | ~2.0x | Async architecture benefit |
+
+### Cache Performance
+
+| Metric | Value |
+|--------|-------|
+| **Cache hit time** | 0.0002–0.0007 s |
+| **Cache miss time** | 1.6–2.4 s |
+| **Speedup (cached vs fresh)** | 2,000–8,000x |
+| **Average cache file size** | 3–28 KB per video |
+| **Total cache (7 videos)** | 250 KB |
+| **Cache TTL** | 7 days |
+| **Cache max file size** | 10 MB |
 
 ### Resource Usage
 
 | Resource | Usage | Notes |
 |----------|-------|-------|
-| Disk (cache) | ~10 MB per video | Auto-expires after 7 days |
-| Memory (Whisper) | ~500 MB–1 GB | Depends on model size |
-| Network | Minimal | API calls only |
-| CPU (screenshots) | Moderate | During frame capture |
+| **Disk (cache)** | ~3–28 KB per video | Auto-expires after 7 days |
+| **Memory (Whisper tiny)** | ~500 MB | Loaded once, reused |
+| **Memory (idle)** | ~50 MB | Python + OpenCV |
+| **Network (transcript)** | ~10 KB | API call only |
+| **Network (Whisper)** | ~3 MB | Audio download |
+| **CPU (screenshots)** | Moderate | During frame capture |
+| **CPU (Whisper)** | High | During transcription |
+
+### Comparison: Caption API vs Whisper
+
+| Metric | YouTube Captions | Whisper (tiny) |
+|--------|------------------|----------------|
+| **Speed (3:33 video)** | 1.6 s | 45.4 s |
+| **Speed ratio** | 1x | 28x slower |
+| **Quality** | High (official) | Moderate (auto-transcribed) |
+| **Availability** | Most YouTube videos | Any video with audio |
+| **Language** | Multi-language | Auto-detect |
+| **Cost** | Free | Free (local) |
 
 ---
 
