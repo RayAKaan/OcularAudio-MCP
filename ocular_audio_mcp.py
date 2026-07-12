@@ -8,6 +8,7 @@ import asyncio
 import subprocess
 import http.cookiejar
 import logging
+import threading
 from pathlib import Path
 from functools import lru_cache
 
@@ -47,6 +48,7 @@ mcp = FastMCP(
 
 # Global holder for the local whisper model instance (loaded lazily)
 _whisper_engine = None
+_whisper_lock = threading.Lock()
 
 
 def _check_system_capabilities() -> dict:
@@ -189,40 +191,40 @@ def _clear_cache(video_id: str = None) -> dict:
 
 def get_whisper_engine():
     global _whisper_engine
-    if _whisper_engine is not None:
-        return _whisper_engine
+    with _whisper_lock:
+        if _whisper_engine is not None:
+            return _whisper_engine
 
-    model_size = os.environ.get("WHISPER_MODEL_SIZE", "tiny")
-    log.info("Initializing local transcription engine (model=%s)...", model_size)
-    try:
-        from faster_whisper import WhisperModel
-        log.info("Using high-performance 'faster-whisper' engine.")
-        _whisper_engine = {
-            "type": "faster-whisper",
-            "model": WhisperModel(model_size, device="cpu", compute_type="int8")
-        }
-        return _whisper_engine
-    except ImportError as e:
-        log.debug("faster-whisper not available: %s", e)
+        model_size = os.environ.get("WHISPER_MODEL_SIZE", "tiny")
+        log.info("Initializing local transcription engine (model=%s)...", model_size)
+        try:
+            from faster_whisper import WhisperModel
+            log.info("Using high-performance 'faster-whisper' engine.")
+            _whisper_engine = {
+                "type": "faster-whisper",
+                "model": WhisperModel(model_size, device="cpu", compute_type="int8")
+            }
+            return _whisper_engine
+        except ImportError as e:
+            log.debug("faster-whisper not available: %s", e)
 
-    try:
-        import whisper
-        log.info("Using standard 'openai-whisper' engine.")
-        _whisper_engine = {
-            "type": "openai-whisper",
-            "model": whisper.load_model(model_size)
-        }
-        return _whisper_engine
-    except ImportError as e:
-        log.debug("openai-whisper not available: %s", e)
-        raise ImportError(
-            "No local ASR engines found. Please install one of the following:\n"
-            "  pip install faster-whisper\n"
-            "  pip install openai-whisper torch"
-        )
+        try:
+            import whisper
+            log.info("Using standard 'openai-whisper' engine.")
+            _whisper_engine = {
+                "type": "openai-whisper",
+                "model": whisper.load_model(model_size)
+            }
+            return _whisper_engine
+        except ImportError as e:
+            log.debug("openai-whisper not available: %s", e)
+            raise ImportError(
+                "No local ASR engines found. Please install one of the following:\n"
+                "  pip install faster-whisper\n"
+                "  pip install openai-whisper torch"
+            )
 
 
-@lru_cache(maxsize=1)
 def find_cookies_file() -> str:
     """Search for cookies.txt in known locations.
 
@@ -268,6 +270,26 @@ def extract_video_id(url: str) -> str:
         if match:
             return match.group(1)
     return ""
+
+
+def _cache_id(url: str) -> str:
+    """Generate a deterministic cache ID from a URL."""
+    video_id = extract_video_id(url)
+    if video_id:
+        return video_id
+    return "".join([c if c.isalnum() else "_" for c in url[-20:]])
+
+
+def _default_metadata(cache_id: str) -> dict:
+    """Return a default metadata dict when fetch fails."""
+    return {
+        "title": f"Web Video (ID: {cache_id})",
+        "uploader": "Unknown",
+        "views": 0,
+        "duration": "N/A",
+        "upload_date": "N/A",
+        "chapters": []
+    }
 
 
 def _blocking_metadata_fetch(url: str, cookies_path: str) -> dict:
@@ -614,29 +636,15 @@ async def get_ocular_audio_transcript(url: str, use_local_whisper: bool = True) 
     video_id = extract_video_id(url)
     is_youtube = bool(video_id)
 
-    cache_id = video_id if is_youtube else "".join([c if c.isalnum() else "_" for c in url[-20:]])
+    cache_id = _cache_id(url)
     cookies_path = find_cookies_file()
 
     # 1. CHECK CACHE FIRST
     cached_data = read_from_cache(cache_id)
     if cached_data:
         log.info("Cache hit for %s. Loading transcript.", cache_id)
-        meta = cached_data.get("metadata", {})
-        transcript = cached_data.get("transcript", "")
-        chapters_list = meta.get("chapters", [])
-        chapters_section = "\n".join(chapters_list) if chapters_list else "None available"
-
-        return (
-            f"[CACHE HIT: LOADED FROM LOCAL CACHE]\n"
-            f"Title: {meta.get('title')}\n"
-            f"Creator: {meta.get('uploader')}\n"
-            f"Duration: {meta.get('duration')}\n"
-            f"Views: {(meta.get('views') or 0):,}\n"
-            f"URL: {url}\n"
-            f"CHAPTER STRUCTURE:\n{chapters_section}\n"
-            f"==================================================\n\n"
-            + transcript
-        )
+        header, transcript, _ = _build_transcript_text(cached_data=cached_data, url=url)
+        return "[CACHE HIT: LOADED FROM LOCAL CACHE]\n" + header + transcript
 
     # 2. RUN METADATA FETCH
     log.info("PROGRESS: Fetching video metadata...")
@@ -648,24 +656,10 @@ async def get_ocular_audio_transcript(url: str, use_local_whisper: bool = True) 
         )
     except asyncio.TimeoutError:
         log.error("Metadata fetch timed out after %ds", NETWORK_TIMEOUT)
-        metadata = {
-            "title": f"Web Video (ID: {cache_id})",
-            "uploader": "Unknown",
-            "views": 0,
-            "duration": "N/A",
-            "upload_date": "N/A",
-            "chapters": []
-        }
+        metadata = _default_metadata(cache_id)
     except Exception as e:
         log.warning("yt-dlp metadata fetch failed: %s", e)
-        metadata = {
-            "title": f"Web Video (ID: {cache_id})",
-            "uploader": "Unknown",
-            "views": 0,
-            "duration": "N/A",
-            "upload_date": "N/A",
-            "chapters": []
-        }
+        metadata = _default_metadata(cache_id)
 
     # 3. APPROACH 1: Fast Subtitle API (Only works on YouTube)
     if is_youtube:
@@ -697,18 +691,8 @@ async def get_ocular_audio_transcript(url: str, use_local_whisper: bool = True) 
                 "timestamp": time.time()
             })
 
-            chapters_section = "\n".join(metadata["chapters"]) if metadata["chapters"] else "None available"
-            return (
-                f"[SUCCESS: YouTube Captions]\n"
-                f"Title: {metadata['title']}\n"
-                f"Creator: {metadata['uploader']}\n"
-                f"Duration: {metadata['duration']}\n"
-                f"Views: {(metadata['views'] or 0):,}\n"
-                f"URL: {url}\n"
-                f"CHAPTER STRUCTURE:\n{chapters_section}\n"
-                f"==================================================\n\n"
-                + transcript_text
-            )
+            header, _, _ = _build_transcript_text(metadata=metadata, url=url)
+            return "[SUCCESS: YouTube Captions]\n" + header + transcript_text
         except Exception as caption_error:
             log.info("Caption API unavailable, falling back to Whisper. Details: %s", caption_error)
 
@@ -736,18 +720,8 @@ async def get_ocular_audio_transcript(url: str, use_local_whisper: bool = True) 
             "timestamp": time.time()
         })
 
-        chapters_section = "\n".join(metadata["chapters"]) if metadata["chapters"] else "None available"
-        return (
-            f"[SUCCESS: Offline Local ASR Transcription]\n"
-            f"Title: {metadata['title']}\n"
-            f"Creator: {metadata['uploader']}\n"
-            f"Duration: {metadata['duration']}\n"
-            f"Views: {(metadata['views'] or 0):,}\n"
-            f"URL: {url}\n"
-            f"CHAPTER STRUCTURE:\n{chapters_section}\n"
-            f"==================================================\n\n"
-            + transcript_text
-        )
+        header, _, _ = _build_transcript_text(metadata=metadata, url=url)
+        return "[SUCCESS: Offline Local ASR Transcription]\n" + header + transcript_text
 
     except asyncio.TimeoutError:
         log.error("Whisper transcription timed out after %ds", NETWORK_TIMEOUT)
@@ -815,37 +789,40 @@ def extract_text_from_frame(image_path: str) -> str:
 
 def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies_path: str, enable_ocr: bool = False) -> list:
     is_youtube = bool(extract_video_id(url))
+    stream_url = None
 
-    ydl_opts = {
-        'format': '18' if is_youtube else 'best',
-        'quiet': True,
-        'no_warnings': True,
-        'socket_timeout': 30,
-    }
-    if cookies_path:
-        ydl_opts['cookiefile'] = cookies_path
+    try:
+        ydl_opts = {
+            'format': '18' if is_youtube else 'best',
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
+        }
+        if is_youtube:
+            ydl_opts['format'] = '18'
+        elif 'vimeo.com' in url:
+            ydl_opts['format'] = 'best'
+        if cookies_path:
+            ydl_opts['cookiefile'] = cookies_path
 
-    log.info("Extracting streaming source URL...")
-    log.info("PROGRESS: Connecting to video source...")
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        stream_url = info.get('url')
+        log.info("Extracting streaming source URL...")
+        log.info("PROGRESS: Connecting to video source...")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            stream_url = info.get('url')
 
-        if not stream_url:
-            formats = info.get('formats', [])
-            for fmt in formats:
-                if fmt.get('url') and (fmt.get('vcodec') != 'none' or not is_youtube):
-                    stream_url = fmt['url']
-                    break
+            if not stream_url:
+                formats = info.get('formats', [])
+                for fmt in formats:
+                    if fmt.get('url') and (fmt.get('vcodec') != 'none' or not is_youtube):
+                        stream_url = fmt['url']
+                        break
+    except Exception as e:
+        log.warning("yt-dlp stream extraction failed: %s. Falling back to direct URL streaming.", e)
+        stream_url = url
 
     if not stream_url:
-        return [
-            "Error: Failed to extract a playable video stream.\n"
-            "Possible causes:\n"
-            "  - Video is private or geo-blocked\n"
-            "  - Video format is not supported\n"
-            "  - Try adding cookies.txt for authenticated content"
-        ]
+        stream_url = url
 
     log.info("PROGRESS: Opening video stream with OpenCV...")
     log.info("Connecting OpenCV to stream URL: %s...", stream_url[:60])
@@ -871,8 +848,7 @@ def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies
             total_frames = 5000
 
         temp_dir = tempfile.gettempdir()
-        video_id = extract_video_id(url)
-        cache_id = video_id if video_id else "".join([c if c.isalnum() else "_" for c in url[-20:]])
+        cache_id = _cache_id(url)
 
         success_count = 0
         payload = []
@@ -965,7 +941,7 @@ def _parse_duration_str(duration_str: str) -> int:
     return total
 
 
-def _build_transcript_text(cached_data: dict = None, transcript_text: str = None, metadata: dict = None, url: str = "") -> tuple[str, str, dict]:
+def _build_transcript_text(cached_data: dict = None, transcript_text: str = None, metadata: dict = None, url: str = "", prefix: str = "") -> tuple[str, str, dict]:
     """Build the transcript section from cached data or fresh fetch."""
     if cached_data:
         meta = cached_data.get("metadata", {})
@@ -978,6 +954,7 @@ def _build_transcript_text(cached_data: dict = None, transcript_text: str = None
     chapters_section = "\n".join(chapters_list) if chapters_list else "None available"
 
     header = (
+        f"{prefix}\n" if prefix else ""
         f"Title: {meta.get('title', 'Unknown')}\n"
         f"Creator: {meta.get('uploader', 'Unknown')}\n"
         f"Duration: {meta.get('duration', 'Unknown')}\n"
@@ -1025,7 +1002,7 @@ async def get_ocular_audio_metadata(url: str) -> str:
     log.info("Fetching metadata for: %s", url)
     video_id = extract_video_id(url)
     is_youtube = bool(video_id)
-    cache_id = video_id if is_youtube else "".join([c if c.isalnum() else "_" for c in url[-20:]])
+    cache_id = _cache_id(url)
     cookies_path = find_cookies_file()
 
     # Check cache first
@@ -1077,7 +1054,7 @@ async def get_ocular_audio_chapters(url: str) -> str:
     log.info("Fetching chapters for: %s", url)
     video_id = extract_video_id(url)
     is_youtube = bool(video_id)
-    cache_id = video_id if is_youtube else "".join([c if c.isalnum() else "_" for c in url[-20:]])
+    cache_id = _cache_id(url)
     cookies_path = find_cookies_file()
 
     # Check cache first
@@ -1199,7 +1176,7 @@ async def get_ocular_audio_video_context(
 
     video_id = extract_video_id(url)
     is_youtube = bool(video_id)
-    cache_id = video_id if is_youtube else "".join([c if c.isalnum() else "_" for c in url[-20:]])
+    cache_id = _cache_id(url)
     cookies_path = find_cookies_file()
 
     # 1. CHECK CACHE
@@ -1220,24 +1197,10 @@ async def get_ocular_audio_video_context(
             )
         except asyncio.TimeoutError:
             log.error("Metadata fetch timed out after %ds", NETWORK_TIMEOUT)
-            metadata = {
-                "title": f"Web Video (ID: {cache_id})",
-                "uploader": "Unknown",
-                "views": 0,
-                "duration": "N/A",
-                "upload_date": "N/A",
-                "chapters": []
-            }
+            metadata = _default_metadata(cache_id)
         except Exception as e:
             log.warning("Metadata fetch failed: %s", e)
-            metadata = {
-                "title": f"Web Video (ID: {cache_id})",
-                "uploader": "Unknown",
-                "views": 0,
-                "duration": "N/A",
-                "upload_date": "N/A",
-                "chapters": []
-            }
+            metadata = _default_metadata(cache_id)
 
         # 3. FETCH TRANSCRIPT
         if is_youtube:
@@ -1342,10 +1305,18 @@ async def get_ocular_audio_video_context(
     timestamps_secs = [m[0] for m in key_moments]
     log.info("Capturing %d screenshots at: %s", len(timestamps_secs), timestamps_secs)
 
-    screenshot_payload = await asyncio.wait_for(
-        asyncio.to_thread(_blocking_screenshot_extractor, url, timestamps_secs, cookies_path, enable_ocr),
-        timeout=NETWORK_TIMEOUT
-    )
+    screenshot_payload = []
+    try:
+        screenshot_payload = await asyncio.wait_for(
+            asyncio.to_thread(_blocking_screenshot_extractor, url, timestamps_secs, cookies_path, enable_ocr),
+            timeout=NETWORK_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        log.error("Screenshot extraction timed out after %ds", NETWORK_TIMEOUT)
+        screenshot_payload = [f"Error: Screenshot extraction timed out after {NETWORK_TIMEOUT} seconds."]
+    except Exception as e:
+        log.error("Screenshot extraction failed: %s", e)
+        screenshot_payload = [f"Error during screenshot extraction: {str(e)}"]
 
     # 7. BUILD FINAL OUTPUT
     keypoints_section = "\n".join(
@@ -1353,9 +1324,10 @@ async def get_ocular_audio_video_context(
         for ts, reason, score in key_moments
     )
 
+    success_count = sum(1 for item in screenshot_payload if hasattr(item, 'path'))
     result = [
         f"[VIDEO CONTEXT - TRANSCRIPT + VISUALS]",
-        f"Detail Level: {detail_level} ({len(key_moments)} screenshots captured)",
+        f"Detail Level: {detail_level} ({success_count} screenshots captured)",
         header,
         "[VISUAL KEYPOINTS]",
         keypoints_section,
@@ -1367,7 +1339,7 @@ async def get_ocular_audio_video_context(
     ]
 
     for item in screenshot_payload:
-        if isinstance(item, str) and item.startswith("[WARNING"):
+        if isinstance(item, str) and (item.startswith("[WARNING") or item.startswith("[Error")):
             result.append(item)
         elif hasattr(item, 'path'):
             result.append(item)
@@ -1544,30 +1516,32 @@ if __name__ == "__main__":
                 # Write to specific file
                 with open(output_file, "w", encoding="utf-8") as f:
                     f.write(prompt_context)
-                print("\n" + "=" * 60)
-                print(f"[SUCCESS: Saved to {output_file}]")
-                print("=" * 60)
+                print("\n" + "=" * 60, file=sys.stderr)
+                print(f"[SUCCESS: Saved to {output_file}]", file=sys.stderr)
+                print("=" * 60, file=sys.stderr)
             elif not no_clipboard:
                 # Default: try clipboard, fallback to file
                 success = copy_to_clipboard_native(prompt_context)
-                print("\n" + "=" * 60)
                 if success:
-                    print("[SUCCESS: Context Copied to Clipboard]")
-                    print("[INSTRUCTION: Paste into Claude Web/ChatGPT]")
+                    print("\n" + "=" * 60, file=sys.stderr)
+                    print("[SUCCESS: Context Copied to Clipboard]", file=sys.stderr)
+                    print("[INSTRUCTION: Paste into Claude Web/ChatGPT]", file=sys.stderr)
+                    print("=" * 60, file=sys.stderr)
                 else:
                     fallback_path = os.path.join(os.getcwd(), "video_context.txt")
                     with open(fallback_path, "w", encoding="utf-8") as f:
                         f.write(prompt_context)
-                    print("[SUCCESS: Transcribed Successfully]")
-                    print(f"[INFO: Saved to {fallback_path}]")
-                print("=" * 60)
+                    print("\n" + "=" * 60, file=sys.stderr)
+                    print("[SUCCESS: Transcribed Successfully]", file=sys.stderr)
+                    print(f"[INFO: Saved to {fallback_path}]", file=sys.stderr)
+                    print("=" * 60, file=sys.stderr)
 
             # Print summary line
             elapsed = time.time() - start_time
             screenshot_count = sum(1 for item in res if hasattr(item, 'path'))
             ocr_count = sum(1 for item in res if isinstance(item, str) and item.startswith("[OCR"))
             if not quiet_mode:
-                print(f"\n[SUMMARY] Processed in {elapsed:.1f}s | {screenshot_count} screenshots | {ocr_count} OCR results")
+                print(f"\n[SUMMARY] Processed in {elapsed:.1f}s | {screenshot_count} screenshots | {ocr_count} OCR results", file=sys.stderr)
 
         try:
             asyncio.run(run_standalone())

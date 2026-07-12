@@ -1,6 +1,6 @@
 {
   "name": "ocular-audio-mcp",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "OcularAudio MCP: Advanced Async Multi-Platform Video Transcript & Screen Vision Server",
   "mcpName": "io.github.RayAKaan/ocular-audio-mcp",
   "main": "./bin/cli.js",
