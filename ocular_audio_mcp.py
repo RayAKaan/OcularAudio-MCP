@@ -954,7 +954,7 @@ def _build_transcript_text(cached_data: dict = None, transcript_text: str = None
     chapters_section = "\n".join(chapters_list) if chapters_list else "None available"
 
     header = (
-        f"{prefix}\n" if prefix else ""
+        (f"{prefix}\n" if prefix else "") +
         f"Title: {meta.get('title', 'Unknown')}\n"
         f"Creator: {meta.get('uploader', 'Unknown')}\n"
         f"Duration: {meta.get('duration', 'Unknown')}\n"
@@ -1228,10 +1228,11 @@ async def get_ocular_audio_video_context(
                     "method": "official_captions",
                     "timestamp": time.time()
                 })
-            except asyncio.TimeoutError:
-                log.error("Caption fetch timed out after %ds", NETWORK_TIMEOUT)
-            except Exception as e:
-                log.info("Caption API failed: %s, trying Whisper...", e)
+            except (asyncio.TimeoutError, Exception) as e:
+                if isinstance(e, asyncio.TimeoutError):
+                    log.error("Caption fetch timed out after %ds, trying Whisper...", NETWORK_TIMEOUT)
+                else:
+                    log.info("Caption API failed: %s, trying Whisper...", e)
                 if use_local_whisper:
                     try:
                         target_param = video_id if is_youtube else url
@@ -1339,7 +1340,7 @@ async def get_ocular_audio_video_context(
     ]
 
     for item in screenshot_payload:
-        if isinstance(item, str) and (item.startswith("[WARNING") or item.startswith("[Error")):
+        if isinstance(item, str) and (item.startswith("[WARNING") or item.startswith("Error")):
             result.append(item)
         elif hasattr(item, 'path'):
             result.append(item)
