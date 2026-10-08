@@ -510,3 +510,15 @@ Phase 3 makes visual evidence a first-class, persistent retrieval surface. Frame
 Each indexed frame includes a stable frame ID, timestamp, persistent image path, dimensions, brightness, contrast, a 64-bit perceptual fingerprint, and OCR text when enabled and available.
 
 Phase 3 complements Phase 2 transcript retrieval: transcript search finds *when* something was discussed, while visual retrieval identifies *what was visible* at indexed moments.
+
+### CLI access
+
+The npm CLI exposes the same visual operations:
+
+```bash
+npx ocular-audio --visual-index "URL"
+npx ocular-audio --visual-search "revenue chart" "URL"
+npx ocular-audio --frame-at 120 "URL"
+npx ocular-audio --frame-burst 120 10 5 "URL"
+```
+
