@@ -2,15 +2,18 @@
 
 ![OcularAudio MCP](OcularAudioMCP.png)
 
-An asynchronous Model Context Protocol (MCP) server that gives AI models "eyes and ears" to process web videos. It extracts transcripts and captures screenshots from YouTube and other video platforms.
+An asynchronous Model Context Protocol (MCP) server that gives AI models "eyes and ears" across web media and local media. OcularAudio resolves supported video/audio sources into a canonical media representation, extracts transcripts and visual evidence, and preserves a local-first architecture for deeper intelligence.
 
 ## Features
 
+- **Universal media foundation**: Resolves supported web URLs, direct media URLs, live URLs, and local media files through one canonical source layer
+- **Four analysis depths**: glance, understand, deep, and omniscient control ingestion fidelity and resource use
 - **Hybrid transcript extraction**: Fetches YouTube captions instantly, falls back to local Whisper ASR
 - **On-demand video screenshots**: Captures frames at any timestamp without downloading the full video
 - **OCR on screenshots**: Extract visible text from frames using Tesseract (optional, `--ocr` flag)
 - **Cookie authentication**: Supports age-restricted and private videos via cookies.txt
 - **Local caching**: Processed videos are cached for instant subsequent lookups
+- **Source inspection**: inspect_ocular_audio_source reports platform, media type, live state, captions, audio/video availability, and source capabilities before expensive processing
 - **Async architecture**: Non-blocking design keeps MCP clients responsive
 - **Flexible output**: Clipboard, stdout, file, or JSON — your choice
 
@@ -297,6 +300,36 @@ YouTube may block transcript access for age-restricted or private videos. To fix
    - `./cookies.txt` (in the project directory)
 
 The server will automatically detect and use the cookies file.
+
+## Phase 1: Universal Media Foundation
+
+Phase 1 introduces the canonical source layer used by the existing extraction pipeline.
+
+### Supported source classes
+
+- Web URLs handled by OcularAudio/yt-dlp extractors
+- Direct media URLs such as MP4/WebM and supported streaming manifests
+- Live URLs where the underlying resolver exposes a live stream
+- Local video and audio files
+
+OcularAudio does not claim that every website is guaranteed to work. Website support depends on the active extractor, authentication, DRM, and the source being accessible. The resolver exposes those capabilities instead of silently assuming support.
+
+### Analysis depth
+
+| Level | Intent |
+|---|---|
+| glance | Minimal metadata/transcript-oriented ingestion |
+| understand | Recommended default with important visual evidence |
+| deep | Higher-fidelity visual/OCR processing |
+| omniscient | Maximum practical preservation policy; progressively expanded by later phases |
+
+The ingestion policy is deliberately separate from response size: later phases can preserve more source evidence while returning only the minimum context required by an agent.
+
+### Source inspection
+
+    npx ocular-audio --analysis-depth understand "https://example.com/video"
+
+The MCP source inspection tool can also be called before expensive processing to determine what the resolver can access.
 
 ## MCP Tools
 

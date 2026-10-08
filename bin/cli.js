@@ -109,11 +109,17 @@ OPTIONS
   --json                  Output raw JSON (metadata + transcript) for programmatic use
 
   Detail Level:
-  --detail <level>        Screenshot capture mode (default: auto)
-                            overview  — Transcript only, no screenshots (fastest)
+  --detail <level>        Legacy screenshot mode (default: auto)
+                            overview  — Transcript only, no screenshots
                             balanced  — Screenshots at key visual moments
-                            deep      — Screenshots at every important moment
+                            deep      — Screenshots at important moments
                             auto      — Adapts to video length and content
+
+  --analysis-depth <level> Universal ingestion depth
+                            glance      — Minimal, fastest
+                            understand  — Recommended default
+                            deep        — High-fidelity analysis
+                            omniscient  — Maximum practical preservation
 
   OCR:
   --ocr                   Extract text from screenshots using Tesseract OCR
@@ -151,6 +157,7 @@ EXAMPLES
 const args = process.argv.slice(2);
 
 let detailLevel = 'auto';
+let analysisDepth = 'understand';
 let targetUrl = null;
 let stdoutMode = false;
 let noClipboard = false;
@@ -228,6 +235,19 @@ for (let i = 0; i < args.length; i++) {
     } else {
       console.error(`[ERROR] Invalid detail level: ${args[i + 1]}`);
       console.error(`  Valid options: ${valid.join(', ')}`);
+      process.exit(1);
+    }
+    i++;
+    continue;
+  }
+  if (arg === '--analysis-depth' && i + 1 < args.length) {
+    const valid = ['glance', 'understand', 'deep', 'omniscient', 'minimal', 'standard', 'normal', 'maximum', 'extreme'];
+    const val = args[i + 1].toLowerCase();
+    if (valid.includes(val)) {
+      analysisDepth = val;
+    } else {
+      console.error(`[ERROR] Invalid analysis depth: ${args[i + 1]}`);
+      console.error(`  Valid options: glance, understand, deep, omniscient`);
       process.exit(1);
     }
     i++;
@@ -339,9 +359,10 @@ if (!targetUrl) {
   process.exit(1);
 }
 
-if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
-  console.error(chalk.red('[ERROR] Invalid URL. Must start with http:// or https://'));
-  console.error(chalk.gray('Tip: YouTube URLs look like https://www.youtube.com/watch?v=...'));
+const localSource = fs.existsSync(targetUrl) && fs.statSync(targetUrl).isFile();
+if (!localSource && !/^https?:\/\/|^rtmp(?:s|e|t|ts)?:\/\//i.test(targetUrl)) {
+  console.error(chalk.red('[ERROR] Invalid media source.'));
+  console.error(chalk.gray('Provide an http(s)/rtmp URL or an existing local media file.'));
   process.exit(1);
 }
 
@@ -349,7 +370,7 @@ if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
 const pythonScriptPath = path.join(__dirname, '..', 'ocular_audio_mcp.py');
 const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
 
-const pyArgs = [pythonScriptPath, targetUrl, detailLevel];
+const pyArgs = [pythonScriptPath, targetUrl, detailLevel, '--analysis-depth', analysisDepth];
 if (stdoutMode) pyArgs.push('--stdout');
 if (noClipboard) pyArgs.push('--no-clipboard');
 if (jsonMode) pyArgs.push('--json');
@@ -366,6 +387,7 @@ if (outputFile) {
 if (!stdoutMode && !jsonMode && !quietMode) {
   console.log(chalk.cyan(`[INFO] OcularAudio MCP v${VERSION}`));
   console.log(chalk.gray(`[INFO] Detail level: ${detailLevel}`));
+  console.log(chalk.gray(`[INFO] Analysis depth: ${analysisDepth}`));
   if (forceMode) console.log(chalk.yellow(`[INFO] Cache bypass: enabled`));
   if (outputFile) console.log(chalk.gray(`[INFO] Output file: ${outputFile}`));
   console.log(chalk.gray(`[INFO] Processing...\n`));
