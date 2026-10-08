@@ -66,8 +66,15 @@ from batch_index import (
     validate_concurrency,
     write_batch_result,
 )
+from agentic_index import (
+    ExecutionPolicy,
+    append_audit_record,
+    build_execution_plan,
+    health_report,
+    read_audit_records,
+)
 
-__version__ = "1.8.0"
+__version__ = "1.3.0"
 
 # Configure logging to stderr so it does NOT corrupt the MCP stdio protocol
 logging.basicConfig(
@@ -88,6 +95,7 @@ VISUAL_INDEX_VERSION = 1
 VISUAL_MAX_FRAMES = 240
 BATCH_CACHE_DIR = CACHE_DIR / "batches"
 BATCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+AUDIT_LOG_PATH = CACHE_DIR / "audit.jsonl"
 
 # Cache expiration: 7 days in seconds
 CACHE_MAX_AGE = 7 * 24 * 60 * 60
@@ -138,6 +146,14 @@ def _check_system_capabilities() -> dict:
             "cross_video_search": True,
             "comparison": True,
             "persistent_results": True,
+        },
+        "agentic_intelligence": {
+            "available": True,
+            "deterministic_planning": True,
+            "max_steps": 8,
+            "retry_policy": True,
+            "timeout_policy": True,
+            "audit_log": str(AUDIT_LOG_PATH),
         },
     }
 
@@ -1524,6 +1540,49 @@ async def inspect_ocular_audio_multimodal_moment(
         return result
     except Exception as exc:
         return [f"Error during multimodal moment inspection: {exc}"]
+
+
+@mcp.tool()
+async def plan_ocular_audio_analysis(
+    query: str = "",
+    multi_video: bool = False,
+    timeout_seconds: float = 120,
+    max_retries: int = 2,
+) -> str:
+    """Build a deterministic, inspectable execution plan for an analysis request."""
+    try:
+        policy = ExecutionPolicy(timeout_seconds=timeout_seconds, max_retries=max_retries).validate()
+        return json.dumps(
+            build_execution_plan(query, multi_video=multi_video, policy=policy).to_dict(),
+            ensure_ascii=False,
+            indent=2,
+        )
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def get_ocular_audio_health() -> str:
+    """Return dependency, cache, and production-readiness health checks."""
+    return json.dumps(
+        health_report(
+            _check_system_capabilities(),
+            cache_dir=CACHE_DIR,
+            batch_cache_dir=BATCH_CACHE_DIR,
+        ),
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+@mcp.tool()
+async def get_ocular_audio_audit(limit: int = 50) -> str:
+    """Return recent local execution audit records."""
+    return json.dumps(
+        {"count": len(read_audit_records(AUDIT_LOG_PATH, limit)), "records": read_audit_records(AUDIT_LOG_PATH, limit)},
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 @mcp.tool()
