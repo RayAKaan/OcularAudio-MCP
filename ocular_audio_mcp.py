@@ -1496,6 +1496,11 @@ if __name__ == "__main__":
         json_output = "--json" in sys.argv
         stdout_mode = "--stdout" in sys.argv
         enable_ocr = "--ocr" in sys.argv
+        analysis_depth = "understand"
+        if "--analysis-depth" in sys.argv:
+            idx = sys.argv.index("--analysis-depth")
+            if idx + 1 < len(sys.argv):
+                analysis_depth = sys.argv[idx + 1]
         force_mode = "--force" in sys.argv
         verbose_mode = "--verbose" in sys.argv
         quiet_mode = "--quiet" in sys.argv
@@ -1583,7 +1588,8 @@ if __name__ == "__main__":
                 url=target_url,
                 detail_level=detail_level,
                 use_local_whisper=True,
-                enable_ocr=enable_ocr
+                enable_ocr=enable_ocr,
+                analysis_depth=analysis_depth
             )
 
             output_lines = []
