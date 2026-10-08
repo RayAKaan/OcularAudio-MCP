@@ -549,6 +549,68 @@ Every result includes:
 This phase intentionally has no external embedding API or vector database dependency. The retrieval contract is designed so a neural embedding backend can replace the TF-IDF scorer later without changing the MCP result surface.
 
  
+## Phase 6: Batch & Multi-Video Intelligence
+
+Phase 6 extends the multimodal evidence contract from one source to a bounded collection of sources. It reuses the existing transcript, visual, OCR, and multimodal layers rather than creating a second retrieval stack.
+
+### Batch capabilities
+
+- **Bounded concurrency**: up to 4 simultaneous media analyses, with 2 as the default.
+- **Manifest ingestion**: JSON arrays or `{"videos": [...]}` / `{"sources": [...]}` objects.
+- **Stable deduplication**: repeated URLs are processed once per batch.
+- **Failure isolation**: one unavailable source does not discard successful sources.
+- **Cross-video ranking**: one query produces a unified ranked evidence list across all sources.
+- **Per-video comparison**: comparable match counts and best evidence scores for the same query.
+- **Persistent batch results**: deterministic batch IDs and atomic JSON persistence under the local cache.
+- **Batch retrieval**: previously completed results can be retrieved without reprocessing media.
+- **Batch history**: recent batch summaries can be listed without loading video content.
+- **Safety bounds**: source count, concurrency, and result counts are explicitly bounded.
+
+### MCP tools
+
+#### `analyze_ocular_audio_batch`
+
+Accepts a JSON manifest and runs multimodal analysis over every unique source. The result contains a deterministic `batch_id`, execution summary, per-source status, and cross-video ranked moments.
+
+#### `search_ocular_audio_videos`
+
+Runs a natural-language multimodal search over multiple videos and returns the strongest evidence across the collection.
+
+#### `compare_ocular_audio_videos`
+
+Runs the same analysis across a collection and returns a per-video scorecard, including query matches, best score, moment count, and failures.
+
+#### `get_ocular_audio_batch`
+
+Retrieves a persisted batch result by its deterministic batch ID.
+
+#### `list_ocular_audio_batches`
+
+Lists recent persisted batches and their source/success/error/moment counts.
+
+### Batch manifest
+
+```json
+{
+  "videos": [
+    {"url": "https://example.com/video-a", "label": "Video A"},
+    {"url": "https://example.com/video-b", "label": "Video B"}
+  ]
+}
+```
+
+### CLI
+
+```bash
+npx ocular-audio --batch batch.json "placeholder"
+npx ocular-audio --batch-search "pricing" batch.json "placeholder"
+npx ocular-audio --batch-compare batch.json "placeholder"
+```
+
+For batch CLI commands, the positional source is only used to enter the existing CLI execution path; the manifest file is the authoritative set of media sources.
+
+Phase 6 intentionally remains deterministic and local-first. It does not claim cross-video model reasoning or external vector-database infrastructure. It provides the orchestration and evidence aggregation contract required for the next agentic/production-hardening stage.
+
 ## Phase 5: Multimodal Understanding
 
 Phase 5 aligns timestamped transcript evidence with persistent visual frames and optional OCR into unified multimodal moments. The layer is deterministic and inspectable: it reports which modalities are present, the nearby transcript evidence, OCR text, and measurable visual change.
