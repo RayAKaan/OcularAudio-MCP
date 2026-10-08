@@ -2654,9 +2654,14 @@ if __name__ == "__main__":
                     sys.exit("Error: --port must be an integer")
             if not 1 <= port <= 65535:
                 sys.exit("Error: --port must be between 1 and 65535")
-            import uvicorn
-            app = mcp.streamable_http_app(transport_security=TRANSPORT_SECURITY)
-            uvicorn.run(app, host=host, port=port, log_level="info")
+            mcp.run(
+                transport="streamable-http",
+                host=host,
+                port=port,
+                json_response=True,
+                stateless_http=False,
+                transport_security=TRANSPORT_SECURITY,
+            )
         else:
             mcp.run(transport="stdio")
         sys.exit(0)
