@@ -359,9 +359,10 @@ if (!targetUrl) {
   process.exit(1);
 }
 
-if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
-  console.error(chalk.red('[ERROR] Invalid URL. Must start with http:// or https://'));
-  console.error(chalk.gray('Tip: YouTube URLs look like https://www.youtube.com/watch?v=...'));
+const localSource = fs.existsSync(targetUrl) && fs.statSync(targetUrl).isFile();
+if (!localSource && !/^https?:\/\/|^rtmp(?:s|e|t|ts)?:\/\//i.test(targetUrl)) {
+  console.error(chalk.red('[ERROR] Invalid media source.'));
+  console.error(chalk.gray('Provide an http(s)/rtmp URL or an existing local media file.'));
   process.exit(1);
 }
 
