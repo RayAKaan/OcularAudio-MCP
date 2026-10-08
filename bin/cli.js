@@ -423,6 +423,8 @@ if (checkMode) {
 }
 
 // ── Validate URL ────────────────────────────────────────────────────────────
+if (!targetUrl && batchManifestFile) targetUrl = batchManifestFile;
+
 if (!targetUrl) {
   console.error(chalk.red('[ERROR] No video URL provided.'));
   console.error(chalk.gray('Usage: npx ocular-audio [options] <video_url>'));
