@@ -524,6 +524,37 @@ npx ocular-audio --frame-burst 120 10 5 "URL"
 
 
  
+
+## Phase 8: Universal Source Foundation
+
+Phase 8 makes source coverage independent from analysis depth. Lite, Intelligence, and Deep are designed to consume the same universal source layer in later phases rather than maintaining separate platform implementations.
+
+### Universal source contract
+
+OcularAudio accepts one canonical input surface:
+
+- Social/video platforms: YouTube, TikTok, Instagram, Facebook, X/Twitter, Snapchat, LinkedIn, Pinterest, Tumblr, VK, OK
+- Video platforms: Vimeo, Twitch, Kick, Rumble, Dailymotion, Bilibili, Loom, Streamable, Rutube, Odysee, PeerTube
+- Audio platforms: SoundCloud, Bandcamp, Mixcloud, Spotify, Audiomack
+- Media/archive sources: Internet Archive, TED, Patreon and other extractor-supported sources
+- Generic web URLs when the active yt-dlp extractor can resolve them
+- Direct media URLs (MP4, WebM, HLS/DASH manifests and supported audio formats)
+- Local video/audio files
+- Streaming sources including RTMP-family, RTSP, SRT and UDP URLs where the underlying local tooling can consume them
+
+Platform names are recognition hints, not guarantees of access. Actual availability depends on the active yt-dlp extractor, authentication, DRM, geo restrictions, network access and the source itself.
+
+### Extractor-driven coverage
+
+Unknown websites remain generic_web rather than being rejected because they are not in a hard-coded platform list. After yt-dlp resolution, the extractor key becomes the authoritative platform hint. This lets new extractor-supported sites work without requiring a new OcularAudio release for every host.
+
+### Local-first contract
+
+Phase 8 does not add a hosted service, database, model runtime, or background server. The same lightweight local MCP process continues to resolve and retrieve media on demand. The MCP package remains version 1.3.0.
+
+### Capability discovery
+
+`get_ocular_audio_capabilities` now exposes `source_coverage`, including source families, recognized platforms, generic-web fallback, extractor-driven discovery, local files, direct media URLs, and streaming URLs.
 ## Phase 7: Agentic Intelligence & Production Hardening
 
 Phase 7 is the orchestration and reliability layer over Phases 1–6. It turns the existing evidence capabilities into an inspectable execution plan, applies bounded retry/timeout policy, records execution evidence, and exposes operational health without requiring a hosted LLM.
