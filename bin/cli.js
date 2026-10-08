@@ -122,6 +122,11 @@ OPTIONS
                             omniscient  — Maximum practical preservation
 
   OCR:
+  --visual-index          Build the persistent visual evidence index
+  --visual-search <q>    Search indexed visual OCR evidence
+  --frame-at <seconds>    Capture a higher-resolution frame at a timestamp
+  --frame-burst <s> <r> <n>
+                          Capture a bounded frame burst around a timestamp
   --ocr                   Extract text from screenshots using Tesseract OCR
                             Requires: brew install tesseract (macOS) / choco install tesseract (Windows) / apt install tesseract-ocr (Linux)
                             Also requires: pip install pytesseract
@@ -171,6 +176,10 @@ let checkMode = false;
 let forceMode = false;
 let verboseMode = false;
 let quietMode = false;
+let visualIndexMode = false;
+let visualSearchQuery = null;
+let frameAt = null;
+let frameBurst = null;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -197,6 +206,22 @@ for (let i = 0; i < args.length; i++) {
   }
   if (arg === '--ocr') {
     enableOcr = true;
+    continue;
+  }
+  if (arg === '--visual-index') {
+    visualIndexMode = true;
+    continue;
+  }
+  if (arg === '--visual-search' && i + 1 < args.length) {
+    visualSearchQuery = args[++i];
+    continue;
+  }
+  if (arg === '--frame-at' && i + 1 < args.length) {
+    frameAt = args[++i];
+    continue;
+  }
+  if (arg === '--frame-burst' && i + 3 < args.length) {
+    frameBurst = [args[++i], args[++i], args[++i]];
     continue;
   }
   if (arg === '--check') {
@@ -375,6 +400,10 @@ if (stdoutMode) pyArgs.push('--stdout');
 if (noClipboard) pyArgs.push('--no-clipboard');
 if (jsonMode) pyArgs.push('--json');
 if (enableOcr) pyArgs.push('--ocr');
+if (visualIndexMode) pyArgs.push('--visual-index');
+if (visualSearchQuery !== null) pyArgs.push('--visual-search', visualSearchQuery);
+if (frameAt !== null) pyArgs.push('--frame-at', frameAt);
+if (frameBurst) pyArgs.push('--frame-burst', ...frameBurst);
 if (forceMode) pyArgs.push('--force');
 if (verboseMode) pyArgs.push('--verbose');
 if (quietMode) pyArgs.push('--quiet');

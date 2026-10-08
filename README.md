@@ -487,3 +487,38 @@ If not found, reinstall Python from python.org and check "Add Python to PATH" du
 ## License
 
 MIT
+
+ 
+## Phase 3: Visual Evidence Layer
+
+Phase 3 makes visual evidence a first-class, persistent retrieval surface. Frames are stored locally at higher fidelity than the legacy screenshot path and indexed with deterministic image fingerprints, brightness/contrast statistics, timestamps, and optional OCR.
+
+### Visual indexing
+
+**`index_ocular_audio_video_visuals`** builds or refreshes a persistent frame index for a finite video. It accepts `url`, `interval_seconds` (default 10), `enable_ocr`, and `force`. The index is stored under `~/.cache/ocular_audio_mcp/visual/` and capped at 240 sampled frames.
+
+**`search_ocular_audio_visuals`** searches an existing visual index using OCR text and returns ranked timestamped frames. This is deterministic and local-first; semantic vision embeddings are intentionally deferred to a later phase.
+
+**`get_ocular_audio_video_frame`** captures one higher-resolution frame at an exact timestamp and returns machine-readable metadata plus the image.
+
+**`get_ocular_audio_video_frame_burst`** captures a bounded chronological burst around a timestamp for inspecting transitions, UI changes, demonstrations, and other short visual events.
+
+**`crop_ocular_audio_video_frame`** captures a frame and crops a region using normalized coordinates by default, or pixel coordinates when `normalized=false`. Optional OCR can be run on the crop.
+
+### Visual evidence contract
+
+Each indexed frame includes a stable frame ID, timestamp, persistent image path, dimensions, brightness, contrast, a 64-bit perceptual fingerprint, and OCR text when enabled and available.
+
+Phase 3 complements Phase 2 transcript retrieval: transcript search finds *when* something was discussed, while visual retrieval identifies *what was visible* at indexed moments.
+
+### CLI access
+
+The npm CLI exposes the same visual operations:
+
+```bash
+npx ocular-audio --visual-index "URL"
+npx ocular-audio --visual-search "revenue chart" "URL"
+npx ocular-audio --frame-at 120 "URL"
+npx ocular-audio --frame-burst 120 10 5 "URL"
+```
+
