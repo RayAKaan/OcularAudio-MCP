@@ -68,6 +68,9 @@ class MetricsRegistry:
         return {"counters": counters, "durations": durations}
 
 
+GLOBAL_METRICS = MetricsRegistry()
+
+
 class OperationTimer:
     def __init__(self, metrics: MetricsRegistry, operation: str) -> None:
         self.metrics = metrics
