@@ -19,7 +19,8 @@
     "agentic_index.py",
     "requirements.txt",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "universal_sources.py"
   ],
   "keywords": [
     "youtube",

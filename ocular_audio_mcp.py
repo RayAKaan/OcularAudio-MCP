@@ -66,6 +66,7 @@ from batch_index import (
     validate_concurrency,
     write_batch_result,
 )
+from universal_sources import universal_capabilities
 from agentic_index import (
     ExecutionPolicy,
     append_audit_record,
@@ -121,7 +122,8 @@ def _check_system_capabilities() -> dict:
         "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         "ocular_audio_version": __version__,
         "supported_analysis_levels": ["glance", "understand", "deep", "omniscient"],
-        "supported_source_types": ["web_url", "local_file", "direct_media_url", "live_url"],
+        "supported_source_types": ["web_url", "local_file", "direct_media_url", "live_url", "stream_url"],
+        "source_coverage": universal_capabilities(),
         "ffmpeg": False,
         "whisper": {"available": False, "engine": None, "model_size": None},
         "tesseract": {"available": False, "path": None},

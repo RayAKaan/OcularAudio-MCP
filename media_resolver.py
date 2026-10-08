@@ -16,6 +16,21 @@ import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from universal_sources import (
+    is_media_url_scheme,
+    platform_from_extractor,
+    platform_from_host,
+    source_family,
+)
+
+from universal_sources import (
+    DIRECT_MEDIA_EXTENSIONS,
+    is_media_url_scheme,
+    platform_from_extractor,
+    platform_from_host,
+    source_family,
+)
+
 SUPPORTED_ANALYSIS_LEVELS = ("glance", "understand", "deep", "omniscient")
 ANALYSIS_LEVEL_ALIASES = {
     "minimal": "glance",
@@ -26,13 +41,8 @@ ANALYSIS_LEVEL_ALIASES = {
     "extreme": "omniscient",
 }
 
-VIDEO_EXTENSIONS = {
-    ".3gp", ".avi", ".flv", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg",
-    ".mpg", ".ts", ".webm", ".wmv", ".m3u8", ".mpd",
-}
-AUDIO_EXTENSIONS = {
-    ".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".weba",
-}
+VIDEO_EXTENSIONS = set(DIRECT_MEDIA_EXTENSIONS) - AUDIO_EXTENSIONS if "AUDIO_EXTENSIONS" in globals() else {".3gp", ".avi", ".flv", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".ts", ".webm", ".wmv", ".m3u8", ".mpd"}
+AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".weba"}
 
 PLATFORM_HOSTS = {
     "youtube": ("youtube.com", "youtu.be", "youtube-nocookie.com"),
@@ -141,13 +151,16 @@ def detect_platform(url: str, extractor_key: str = "") -> str:
         if any(host == item or host.endswith("." + item) for item in hosts):
             return platform
 
-    return "generic_web"
+    # Phase 8 keeps unknown hosts first-class. The universal source catalog
+    # provides additional host hints, while yt-dlp extractor keys remain the
+    # authoritative discovery mechanism after resolution.
+    return platform_from_host(host)
 
 
 def _is_url(source: str) -> bool:
     try:
         parsed = urllib.parse.urlparse(source)
-        return parsed.scheme.lower() in {"http", "https", "rtmp", "rtmps", "rtmpe", "rtmpt", "rtmpts"}
+        return is_media_url_scheme(parsed.scheme)
     except ValueError:
         return False
 
@@ -204,6 +217,8 @@ def classify_source(source: str) -> Dict[str, Any]:
         "source": value,
         "source_kind": "url",
         "platform": detect_platform(value),
+        "source_family": source_family(detect_platform(value)),
+        "source_family": source_family(detect_platform(value)),
         "media_type": media_type,
         "is_live": scheme.startswith("rtmp"),
         "extension": suffix,
@@ -300,7 +315,11 @@ def resolve_media_source(source: str, cookies_path: str = "") -> Dict[str, Any]:
 
         canonical.update({
             "platform": detect_platform(source, extractor),
+            "source_family": source_family(platform_from_extractor(extractor) if extractor else detect_platform(source)),
+            "source_family": source_family(platform_from_extractor(extractor) if extractor else detect_platform(source)),
             "extractor": extractor or None,
+            "extractor_platform": platform_from_extractor(extractor),
+            "extractor_platform": platform_from_extractor(extractor),
             "title": info.get("title") or canonical["title"],
             "uploader": info.get("uploader") or info.get("channel") or "",
             "duration_seconds": info.get("duration"),
