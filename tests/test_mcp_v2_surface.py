@@ -36,8 +36,10 @@ class MCPV2SurfaceTests(unittest.TestCase):
             async with Client(self.server_module.mcp) as client:
                 tools = await client.list_tools()
                 resources = await client.list_resources()
+                prompts = await client.list_prompts()
                 tool_names = {tool.name for tool in tools.tools}
                 resource_uris = {str(resource.uri) for resource in resources.resources}
+                prompt_names = {prompt.name for prompt in prompts.prompts}
 
                 self.assertIn("get_ocular_audio_contract", tool_names)
                 self.assertEqual(31, len(tool_names))
@@ -57,6 +59,9 @@ class MCPV2SurfaceTests(unittest.TestCase):
                 )
                 self.assertTrue(clear_tool.annotations.destructive_hint)
                 self.assertFalse(clear_tool.annotations.read_only_hint)
+
+                prompt_result = await client.get_prompt("search_video_evidence", {"url": "https://example.com/v", "query": "refund"})
+                self.assertIn("refund", prompt_result.messages[0].content.text)
 
                 result = await client.call_tool(
                     "get_ocular_audio_contract", {}

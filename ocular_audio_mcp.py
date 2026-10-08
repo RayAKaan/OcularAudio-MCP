@@ -69,6 +69,7 @@ from batch_index import (
 )
 from universal_sources import universal_capabilities
 from protocol_contract import server_contract, tool_annotations
+from prompts import prompt_catalog, render_compare_videos, render_inspect_video, render_search_video_evidence, render_visual_review
 from capability_modes import get_mode_policy, mode_capabilities, mode_output_contract, normalize_mode, resolve_mode
 from agentic_index import (
     ExecutionPolicy,
@@ -2518,7 +2519,31 @@ def copy_to_clipboard_native(text: str) -> bool:
 @mcp.tool(annotations=tool_annotations("get_ocular_audio_contract"))
 async def get_ocular_audio_contract() -> dict[str, object]:
     """Return the machine-readable MCP contract and current capability surface."""
-    return server_contract(__version__, _check_system_capabilities())
+    return server_contract(__version__, _check_system_capabilities(), prompt_catalog())
+
+
+@mcp.prompt()
+def inspect_video(url: str, focus: str = "") -> str:
+    """Create a grounded investigation prompt for a video."""
+    return render_inspect_video(url, focus)
+
+
+@mcp.prompt()
+def search_video_evidence(url: str, query: str) -> str:
+    """Create a timestamp-focused evidence retrieval prompt."""
+    return render_search_video_evidence(url, query)
+
+
+@mcp.prompt()
+def review_visual_evidence(url: str, focus: str = "") -> str:
+    """Create a visual and OCR evidence review prompt."""
+    return render_visual_review(url, focus)
+
+
+@mcp.prompt()
+def compare_videos(sources: str, question: str) -> str:
+    """Create a cross-video evidence comparison prompt."""
+    return render_compare_videos(sources, question)
 
 
 @mcp.resource("ocularaudio://capabilities", mime_type="application/json")
@@ -2551,13 +2576,45 @@ async def ocular_audio_health_resource() -> str:
 async def ocular_audio_contract_resource() -> str:
     """Expose the machine-readable MCP contract as an MCP resource."""
     return json.dumps(
-        server_contract(__version__, _check_system_capabilities()),
+        server_contract(__version__, _check_system_capabilities(), prompt_catalog()),
         ensure_ascii=False,
         indent=2,
     )
 
 
 if __name__ == "__main__":
+    # Phase 11 transport launcher. stdio remains the default local MCP transport;
+    # Streamable HTTP is the production HTTP transport for MCP v2.
+    if "--transport" in sys.argv:
+        idx = sys.argv.index("--transport")
+        transport = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else "stdio"
+        if transport not in {"stdio", "streamable-http"}:
+            sys.exit("Error: transport must be stdio or streamable-http")
+        if transport == "streamable-http":
+            host = "127.0.0.1"
+            port = 8000
+            if "--host" in sys.argv:
+                host_idx = sys.argv.index("--host")
+                host = sys.argv[host_idx + 1] if host_idx + 1 < len(sys.argv) else host
+            if "--port" in sys.argv:
+                port_idx = sys.argv.index("--port")
+                try:
+                    port = int(sys.argv[port_idx + 1])
+                except (IndexError, ValueError):
+                    sys.exit("Error: --port must be an integer")
+            if not 1 <= port <= 65535:
+                sys.exit("Error: --port must be between 1 and 65535")
+            mcp.run(
+                transport="streamable-http",
+                host=host,
+                port=port,
+                json_response=True,
+                stateless_http=False,
+            )
+        else:
+            mcp.run(transport="stdio")
+        sys.exit(0)
+
     # Handle --check mode (no URL required)
     if "--check" in sys.argv:
         caps = _check_system_capabilities()

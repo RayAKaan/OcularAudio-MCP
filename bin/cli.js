@@ -141,6 +141,9 @@ OPTIONS
   --agentic <query>      Execute the analysis plan with retries/timeouts
   --health                Show dependency/cache health
   --audit                 Show recent execution audit records
+  --transport <mode>      Run MCP server: stdio or streamable-http
+  --host <host>            HTTP bind host (default: 127.0.0.1)
+  --port <port>            HTTP bind port (default: 8000)
   --ocr                   Extract text from screenshots using Tesseract OCR
                             Requires: brew install tesseract (macOS) / choco install tesseract (Windows) / apt install tesseract-ocr (Linux)
                             Also requires: pip install pytesseract
@@ -206,6 +209,9 @@ let planQuery = null;
 let agenticQuery = null;
 let healthMode = false;
 let auditMode = false;
+let transportMode = null;
+let transportHost = '127.0.0.1';
+let transportPort = 8000;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -294,6 +300,21 @@ for (let i = 0; i < args.length; i++) {
   }
   if (arg === '--audit') {
     auditMode = true;
+    continue;
+  }
+  if (arg === '--transport' && i + 1 < args.length) {
+    const valid = ['stdio', 'streamable-http'];
+    transportMode = args[++i].toLowerCase();
+    if (!valid.includes(transportMode)) { console.error(`[ERROR] Invalid transport: ${transportMode}`); process.exit(1); }
+    continue;
+  }
+  if (arg === '--host' && i + 1 < args.length) {
+    transportHost = args[++i];
+    continue;
+  }
+  if (arg === '--port' && i + 1 < args.length) {
+    transportPort = Number(args[++i]);
+    if (!Number.isInteger(transportPort) || transportPort < 1 || transportPort > 65535) { console.error('[ERROR] Invalid port.'); process.exit(1); }
     continue;
   }
   if (arg === '--check') {
@@ -459,8 +480,9 @@ if (checkMode) {
 // ── Validate URL ────────────────────────────────────────────────────────────
 if (!targetUrl && batchManifestFile) targetUrl = batchManifestFile;
 if (!targetUrl && (healthMode || auditMode || planQuery !== null || agenticQuery !== null)) targetUrl = "local";
+if (transportMode) targetUrl = null;
 
-if (!targetUrl) {
+if (!targetUrl && !transportMode) {
   console.error(chalk.red('[ERROR] No video URL provided.'));
   console.error(chalk.gray('Usage: npx ocular-audio [options] <video_url>'));
   console.error(chalk.gray('Run with --help for more information.'));
@@ -478,7 +500,9 @@ if (!localSource && !/^(?:https?|rtmp(?:s|e|t|ts)?|rtsp|srt|udp):\/\//i.test(tar
 const pythonScriptPath = path.join(__dirname, '..', 'ocular_audio_mcp.py');
 const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
 
-const pyArgs = [pythonScriptPath, targetUrl, detailLevel, '--analysis-depth', analysisDepth, '--mode', capabilityMode];
+const pyArgs = transportMode
+  ? [pythonScriptPath, '--transport', transportMode, '--host', transportHost, '--port', String(transportPort)]
+  : [pythonScriptPath, targetUrl, detailLevel, '--analysis-depth', analysisDepth, '--mode', capabilityMode];
 if (stdoutMode) pyArgs.push('--stdout');
 if (noClipboard) pyArgs.push('--no-clipboard');
 if (jsonMode) pyArgs.push('--json');
@@ -507,7 +531,14 @@ if (outputFile) {
 }
 
 // ── Print header ────────────────────────────────────────────────────────────
-if (!stdoutMode && !jsonMode && !quietMode) {
+if (transportMode) {
+  console.log(chalk.cyan(`[INFO] OcularAudio MCP v${VERSION}`));
+  console.log(chalk.gray(`[INFO] Transport: ${transportMode}`));
+  if (transportMode === 'streamable-http') console.log(chalk.gray(`[INFO] Endpoint: http://${transportHost}:${transportPort}/mcp`));
+  console.log(chalk.gray('[INFO] Starting MCP server...\n'));
+}
+
+if (!transportMode && !stdoutMode && !jsonMode && !quietMode) {
   console.log(chalk.cyan(`[INFO] OcularAudio MCP v${VERSION}`));
   console.log(chalk.gray(`[INFO] Detail level: ${detailLevel}`));
   console.log(chalk.gray(`[INFO] Analysis depth: ${analysisDepth}`));

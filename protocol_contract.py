@@ -163,7 +163,7 @@ def resource_catalog() -> list[dict[str, str]]:
     ]
 
 
-def server_contract(version: str, capabilities: dict[str, Any]) -> dict[str, Any]:
+def server_contract(version: str, capabilities: dict[str, Any], prompts: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     return {
         "contract_version": CONTRACT_VERSION,
         "mcp_protocol_revision": MCP_PROTOCOL_REVISION,
@@ -175,6 +175,7 @@ def server_contract(version: str, capabilities: dict[str, Any]) -> dict[str, Any
         },
         "tools": tool_contracts(),
         "resources": resource_catalog(),
+        "prompts": prompts or [],
         "capability_modes": capabilities.get("capability_modes", {}),
         "source_coverage": capabilities.get("source_coverage", {}),
         "backward_compatible": {
@@ -182,6 +183,8 @@ def server_contract(version: str, capabilities: dict[str, Any]) -> dict[str, Any
             "structured_content": True,
             "legacy_mcp_clients": True,
         },
+        "transports": ["stdio", "streamable-http"],
+        "superseded_transports": ["sse"],
     }
 
 

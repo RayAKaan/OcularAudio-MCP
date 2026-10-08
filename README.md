@@ -1,4 +1,49 @@
 
+## Phase 11: Host Interoperability & Deployment
+
+Phase 11 turns the protocol foundation into a host-ready interface while keeping OcularAudio **local-first** and version **1.3.0**.
+
+### Reusable MCP prompts
+
+The server now exposes four user-selectable prompts:
+
+- `inspect_video` — grounded investigation of one source.
+- `search_video_evidence` — timestamp-focused evidence retrieval.
+- `review_visual_evidence` — visual/OCR-focused review.
+- `compare_videos` — cross-video comparison.
+
+Prompts are deterministic templates. They do not call an LLM themselves; the MCP host decides how to use the returned messages. MCP v2 supports server prompts as a first-class primitive. citeturn0search3
+
+### Streamable HTTP
+
+stdio remains the default local transport. Phase 11 adds MCP Streamable HTTP:
+
+```bash
+npx ocular-audio --transport streamable-http --host 127.0.0.1 --port 8000
+```
+
+The MCP endpoint is:
+
+`http://127.0.0.1:8000/mcp`
+
+Streamable HTTP is the current HTTP transport; SSE is retained only for compatibility and is not used by this implementation. citeturn1search0turn1search3
+
+For programmatic clients, MCP v2 clients can connect directly to the endpoint URL. citeturn1search8
+
+### Transport contract
+
+The machine-readable Phase 10 contract now explicitly reports:
+
+- `stdio`
+- `streamable-http`
+- `sse` as superseded, not an active Phase 11 transport
+
+HTTP binds to localhost by default. This intentionally avoids exposing the local media-analysis server to a network until the operator explicitly chooses a host. MCP's v2 HTTP stack also provides DNS-rebinding protection. citeturn1search5
+
+### Validation
+
+Phase 11 validates prompt registration and retrieval through the same in-process MCP client used for tool/resource integration testing, plus Python compilation, MCP SDK imports, CLI syntax, and package metadata.
+
 ## Phase 10: MCP Protocol Modernization & Interoperability
 
 Phase 10 upgrades OcularAudio to the current MCP Python SDK v2 line and makes the server self-describing at the protocol layer. The application remains local-first and the package version remains **1.3.0**.
