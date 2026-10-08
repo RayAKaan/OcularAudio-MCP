@@ -13,11 +13,12 @@ from pathlib import Path
 from functools import lru_cache
 
 # Python version check (list[int] requires 3.9+)
-if sys.version_info < (3, 9):
-    sys.exit("Error: OcularAudio MCP requires Python 3.9 or higher. You are running Python {}.{}".format(*sys.version_info[:2]))
+if sys.version_info < (3, 10):
+    sys.exit("Error: OcularAudio MCP requires Python 3.10 or higher. You are running Python {}.{}".format(*sys.version_info[:2]))
 
 from requests import Session
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server import MCPServer
+from mcp.server.mcpserver import Image
 from youtube_transcript_api import YouTubeTranscriptApi
 import yt_dlp
 import cv2
@@ -67,6 +68,7 @@ from batch_index import (
     write_batch_result,
 )
 from universal_sources import universal_capabilities
+from protocol_contract import server_contract, tool_annotations
 from capability_modes import get_mode_policy, mode_capabilities, mode_output_contract, normalize_mode, resolve_mode
 from agentic_index import (
     ExecutionPolicy,
@@ -107,9 +109,11 @@ CACHE_MAX_AGE = 7 * 24 * 60 * 60
 NETWORK_TIMEOUT = 300
 
 # Initialize the Model Context Protocol (MCP) server
-mcp = FastMCP(
+mcp = MCPServer(
     "OcularAudio Server",
-    dependencies=["youtube-transcript-api", "yt-dlp", "opencv-python-headless"]
+    version=__version__,
+    instructions="Local-first universal media evidence and multimodal analysis server.",
+    dependencies=["youtube-transcript-api", "yt-dlp", "opencv-python-headless"],
 )
 
 # Global holder for the local whisper model instance (loaded lazily)
@@ -761,7 +765,7 @@ def _blocking_whisper_transcription(url_or_id: str, cookies_path: str) -> str:
     return "\n".join(formatted_segments)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("get_ocular_audio_transcript"))
 async def get_ocular_audio_transcript(url: str, use_local_whisper: bool = True) -> str:
     """
     Extracts the complete transcript, video chapters, and metadata of any YouTube or general Web video.
@@ -1028,7 +1032,7 @@ def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies
         cap.release()
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("get_ocular_audio_video_screenshots"))
 async def get_ocular_audio_video_screenshots(url: str, timestamps_secs: list[int], enable_ocr: bool = False) -> list:
     """
     Extracts high-quality, low-resolution screenshots at specific timestamps directly from any YouTube or Web video
@@ -1165,7 +1169,7 @@ def _blocking_visual_frame_capture(
         cap.release()
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("index_ocular_audio_video_visuals"))
 async def index_ocular_audio_video_visuals(
     url: str,
     interval_seconds: float = 10,
@@ -1226,7 +1230,7 @@ async def index_ocular_audio_video_visuals(
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("search_ocular_audio_visuals"))
 async def search_ocular_audio_visuals(
     url: str,
     query: str,
@@ -1253,7 +1257,7 @@ async def search_ocular_audio_visuals(
     }, ensure_ascii=False, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("get_ocular_audio_video_frame"))
 async def get_ocular_audio_video_frame(
     url: str,
     timestamp_seconds: float,
@@ -1286,7 +1290,7 @@ async def get_ocular_audio_video_frame(
         return [f"Error during frame extraction: {exc}"]
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("get_ocular_audio_video_frame_burst"))
 async def get_ocular_audio_video_frame_burst(
     url: str,
     center_seconds: float,
@@ -1326,7 +1330,7 @@ async def get_ocular_audio_video_frame_burst(
         return [f"Error during frame burst extraction: {exc}"]
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("crop_ocular_audio_video_frame"))
 async def crop_ocular_audio_video_frame(
     url: str,
     timestamp_seconds: float,
@@ -1425,7 +1429,7 @@ def _semantic_documents_for_source(url: str) -> list[SemanticDocument]:
     return documents
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("search_ocular_audio_hybrid"))
 async def search_ocular_audio_hybrid(
     url: str,
     query: str,
@@ -1454,7 +1458,7 @@ async def search_ocular_audio_hybrid(
 
 
 @mcp.tool()
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("analyze_ocular_audio_multimodal"))
 async def analyze_ocular_audio_multimodal(
     url: str,
     query: str = "",
@@ -1504,7 +1508,7 @@ async def analyze_ocular_audio_multimodal(
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("inspect_ocular_audio_multimodal_moment"))
 async def inspect_ocular_audio_multimodal_moment(
     url: str,
     timestamp_seconds: float,
@@ -1547,7 +1551,7 @@ async def inspect_ocular_audio_multimodal_moment(
         return [f"Error during multimodal moment inspection: {exc}"]
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("plan_ocular_audio_analysis"))
 async def plan_ocular_audio_analysis(
     query: str = "",
     multi_video: bool = False,
@@ -1567,7 +1571,7 @@ async def plan_ocular_audio_analysis(
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("get_ocular_audio_health"))
 async def get_ocular_audio_health() -> str:
     """Return dependency, cache, and production-readiness health checks."""
     return json.dumps(
@@ -1581,7 +1585,7 @@ async def get_ocular_audio_health() -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("get_ocular_audio_audit"))
 async def get_ocular_audio_audit(limit: int = 50) -> str:
     """Return recent local execution audit records."""
     return json.dumps(
@@ -1591,7 +1595,7 @@ async def get_ocular_audio_audit(limit: int = 50) -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("run_ocular_audio_analysis"))
 async def run_ocular_audio_analysis(
     url: str,
     query: str = "",
@@ -1645,7 +1649,7 @@ async def run_ocular_audio_analysis(
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("analyze_ocular_audio_batch"))
 async def analyze_ocular_audio_batch(
     manifest_json: str,
     query: str = "",
@@ -1695,7 +1699,7 @@ async def analyze_ocular_audio_batch(
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("search_ocular_audio_videos"))
 async def search_ocular_audio_videos(
     sources_json: str,
     query: str,
@@ -1713,7 +1717,7 @@ async def search_ocular_audio_videos(
         use_local_whisper=use_local_whisper, max_concurrency=max_concurrency)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("compare_ocular_audio_videos"))
 async def compare_ocular_audio_videos(
     sources_json: str,
     query: str = "",
@@ -1750,7 +1754,7 @@ async def compare_ocular_audio_videos(
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("get_ocular_audio_batch"))
 async def get_ocular_audio_batch(batch_id: str) -> str:
     """Retrieve a persisted Phase 6 batch result by deterministic batch ID."""
     if not re.fullmatch(r"[0-9a-f]{24}", batch_id or ""):
@@ -1761,7 +1765,7 @@ async def get_ocular_audio_batch(batch_id: str) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("list_ocular_audio_batches"))
 async def list_ocular_audio_batches(limit: int = 20) -> str:
     """List recent persisted batch results without loading individual media."""
     limit = max(1, min(int(limit), 100))
@@ -1873,7 +1877,7 @@ def _build_transcript_text(cached_data: dict = None, transcript_text: str = None
     return header, transcript, meta
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("inspect_ocular_audio_source"))
 async def inspect_ocular_audio_source(source: str) -> str:
     """Resolve a URL or local media file without downloading or analyzing it."""
     cookies_path = find_cookies_file()
@@ -1892,7 +1896,7 @@ async def inspect_ocular_audio_source(source: str) -> str:
     return json.dumps(safe, ensure_ascii=False, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("get_ocular_audio_capabilities"))
 async def get_ocular_audio_capabilities() -> str:
     """
     Returns system capabilities and dependency status.
@@ -1922,7 +1926,7 @@ async def get_ocular_audio_capabilities() -> str:
     return "\n".join(output)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("get_ocular_audio_metadata"))
 async def get_ocular_audio_metadata(url: str) -> str:
     """
     Extracts only video metadata (title, creator, duration, views, chapters) without transcript.
@@ -1978,7 +1982,7 @@ async def get_ocular_audio_metadata(url: str) -> str:
     return "\n".join(output)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("get_ocular_audio_chapters"))
 async def get_ocular_audio_chapters(url: str) -> str:
     """
     Extracts only video chapters with timestamps.
@@ -2030,7 +2034,7 @@ async def get_ocular_audio_chapters(url: str) -> str:
     return "\n".join(output)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("list_ocular_audio_cache"))
 async def list_ocular_audio_cache() -> str:
     """
     Lists all cached videos with their metadata.
@@ -2058,7 +2062,7 @@ async def list_ocular_audio_cache() -> str:
     return "\n".join(output)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("clear_ocular_audio_cache"))
 async def clear_ocular_audio_cache(video_id: str = "") -> str:
     """
     Clears cached video data.
@@ -2079,7 +2083,7 @@ async def clear_ocular_audio_cache(video_id: str = "") -> str:
         return f"[CACHE] {result['message']}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("get_ocular_audio_video_context"))
 async def get_ocular_audio_video_context(
     url: str,
     detail_level: str = "auto",
@@ -2324,7 +2328,7 @@ def _evidence_payload(segment) -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("search_ocular_audio_video"))
 async def search_ocular_audio_video(
     url: str,
     query: str,
@@ -2371,7 +2375,7 @@ async def search_ocular_audio_video(
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("get_ocular_audio_video_timeline"))
 async def get_ocular_audio_video_timeline(
     url: str,
     start_seconds: float = 0,
@@ -2402,7 +2406,7 @@ async def get_ocular_audio_video_timeline(
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("inspect_ocular_audio_moment"))
 async def inspect_ocular_audio_moment(
     url: str,
     timestamp_seconds: float,
@@ -2454,7 +2458,7 @@ async def inspect_ocular_audio_moment(
         return [f"Error during moment inspection: {exc}"]
 
 
-@mcp.tool()
+@mcp.tool(annotations=tool_annotations("search_ocular_audio_cache"))
 async def search_ocular_audio_cache(query: str, top_k: int = 10) -> str:
     """Search all locally cached transcripts and return ranked timestamped evidence."""
     if not query or not query.strip():
@@ -2508,6 +2512,49 @@ def copy_to_clipboard_native(text: str) -> bool:
     except Exception:
         pass
     return False
+
+
+
+@mcp.tool(annotations=tool_annotations("get_ocular_audio_contract"))
+async def get_ocular_audio_contract() -> dict[str, object]:
+    """Return the machine-readable MCP contract and current capability surface."""
+    return server_contract(__version__, _check_system_capabilities())
+
+
+@mcp.resource("ocularaudio://capabilities", mime_type="application/json")
+async def ocular_audio_capabilities_resource() -> str:
+    """Expose current OcularAudio capabilities as an MCP resource."""
+    return json.dumps(_check_system_capabilities(), ensure_ascii=False, indent=2)
+
+
+@mcp.resource("ocularaudio://modes", mime_type="application/json")
+async def ocular_audio_modes_resource() -> str:
+    """Expose capability-mode policies as an MCP resource."""
+    return json.dumps(mode_capabilities(), ensure_ascii=False, indent=2)
+
+
+@mcp.resource("ocularaudio://health", mime_type="application/json")
+async def ocular_audio_health_resource() -> str:
+    """Expose current dependency and cache health as an MCP resource."""
+    return json.dumps(
+        health_report(
+            _check_system_capabilities(),
+            cache_dir=CACHE_DIR,
+            batch_cache_dir=BATCH_CACHE_DIR,
+        ),
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+@mcp.resource("ocularaudio://contract", mime_type="application/json")
+async def ocular_audio_contract_resource() -> str:
+    """Expose the machine-readable MCP contract as an MCP resource."""
+    return json.dumps(
+        server_contract(__version__, _check_system_capabilities()),
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 if __name__ == "__main__":

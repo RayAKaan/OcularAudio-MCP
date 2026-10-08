@@ -21,7 +21,8 @@
     "README.md",
     "LICENSE",
     "universal_sources.py",
-    "capability_modes.py"
+    "capability_modes.py",
+    "protocol_contract.py"
   ],
   "keywords": [
     "youtube",
