@@ -70,6 +70,7 @@ from agentic_index import (
     ExecutionPolicy,
     append_audit_record,
     build_execution_plan,
+    execute_with_policy,
     health_report,
     read_audit_records,
 )
@@ -1583,6 +1584,59 @@ async def get_ocular_audio_audit(limit: int = 50) -> str:
         ensure_ascii=False,
         indent=2,
     )
+
+
+@mcp.tool()
+async def run_ocular_audio_analysis(
+    url: str,
+    query: str = "",
+    multi_video: bool = False,
+    timeout_seconds: float = 120,
+    max_retries: int = 2,
+) -> str:
+    """Execute the deterministic analysis plan using existing evidence tools."""
+    try:
+        policy = ExecutionPolicy(timeout_seconds=timeout_seconds, max_retries=max_retries).validate()
+        plan = build_execution_plan(query, multi_video=multi_video, policy=policy)
+        outputs = []
+        for step in plan.steps:
+            if step.operation == "inspect_source":
+                worker = lambda: inspect_ocular_audio_source(url)
+            elif step.operation == "search_hybrid":
+                worker = lambda: search_ocular_audio_hybrid(url=url, query=query, top_k=8)
+            elif step.operation == "inspect_moment":
+                evidence = await search_ocular_audio_hybrid(url=url, query=query, top_k=1)
+                payload = json.loads(evidence)
+                timestamp = float((payload.get("results") or [{}])[0].get("start_seconds", 0))
+                worker = lambda: inspect_ocular_audio_moment(url=url, timestamp_seconds=timestamp)
+            elif step.operation == "search_visual":
+                worker = lambda: search_ocular_audio_visuals(url=url, query=query, top_k=8)
+            elif step.operation == "timeline":
+                worker = lambda: get_ocular_audio_video_timeline(url=url)
+            elif step.operation == "search_batch":
+                worker = lambda: search_ocular_audio_videos(sources_json=url, query=query, top_k=12)
+            elif step.operation == "compare_batch":
+                worker = lambda: compare_ocular_audio_videos(sources_json=url, query=query)
+            else:
+                raise ValueError(f"Unsupported plan operation: {step.operation}")
+
+            result, audit = await execute_with_policy(step.operation, worker, policy)
+            append_audit_record(AUDIT_LOG_PATH, audit)
+            outputs.append({
+                "step": step.to_dict(),
+                "audit": audit.to_dict(),
+                "result": result,
+            })
+            if audit.status != "success" and step.required:
+                break
+
+        return json.dumps({
+            "plan": plan.to_dict(),
+            "completed_steps": len(outputs),
+            "results": outputs,
+        }, ensure_ascii=False, indent=2, default=str)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
 @mcp.tool()
