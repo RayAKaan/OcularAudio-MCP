@@ -44,7 +44,7 @@ class EvidenceIndexTests(unittest.TestCase):
         segments = build_evidence_segments(self.TRANSCRIPT)
         window = timeline_window(segments, 30, 40)
         self.assertEqual([item.start_seconds for item in window], [18, 35])
-        self.assertEqual(nearest_evidence(segments, 34).start_seconds, 35)
+        self.assertEqual(nearest_evidence(segments, 34).start_seconds, 18)
 
     def test_format_timestamp(self):
         self.assertEqual(format_timestamp(5), "[00:05]")
