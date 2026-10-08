@@ -35,8 +35,8 @@ class ExecutionPolicy:
         retries = int(self.max_retries)
         backoff = float(self.backoff_seconds)
         steps = int(self.max_steps)
-        if not 0.01 <= timeout <= 900:
-            raise ValueError("timeout_seconds must be between 0.01 and 900.")
+        if not 0.001 <= timeout <= 900:
+            raise ValueError("timeout_seconds must be between 0.001 and 900.")
         if not 0 <= retries <= MAX_RETRIES:
             raise ValueError(f"max_retries must be between 0 and {MAX_RETRIES}.")
         if not 0 <= backoff <= 30:
