@@ -18,7 +18,7 @@ jobs:
         with:
           node-version: "20"
       - name: Compile Python
-        run: python -m py_compile ocular_audio_mcp.py media_resolver.py evidence_index.py visual_index.py semantic_index.py multimodal_index.py
+        run: python -m py_compile ocular_audio_mcp.py media_resolver.py evidence_index.py visual_index.py semantic_index.py multimodal_index.py batch_index.py
       - name: Install visual test dependency
         run: python -m pip install --disable-pip-version-check opencv-python-headless
       - name: Run unit tests
