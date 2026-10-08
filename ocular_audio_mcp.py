@@ -53,8 +53,21 @@ from multimodal_index import (
     describe_moment,
     rank_multimodal_moments,
 )
+from batch_index import (
+    BatchItem,
+    BatchSource,
+    compare_batch_results,
+    parse_batch_manifest,
+    rank_cross_video_results,
+    read_batch_result,
+    run_batch,
+    stable_batch_id,
+    summarize_batch,
+    validate_concurrency,
+    write_batch_result,
+)
 
-__version__ = "1.7.0"
+__version__ = "1.8.0"
 
 # Configure logging to stderr so it does NOT corrupt the MCP stdio protocol
 logging.basicConfig(
@@ -73,6 +86,8 @@ VISUAL_FRAME_DIR = VISUAL_CACHE_DIR / "frames"
 VISUAL_FRAME_DIR.mkdir(parents=True, exist_ok=True)
 VISUAL_INDEX_VERSION = 1
 VISUAL_MAX_FRAMES = 240
+BATCH_CACHE_DIR = CACHE_DIR / "batches"
+BATCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Cache expiration: 7 days in seconds
 CACHE_MAX_AGE = 7 * 24 * 60 * 60
@@ -115,6 +130,14 @@ def _check_system_capabilities() -> dict:
             "modalities": ["transcript", "visual", "ocr"],
             "deterministic_alignment": True,
             "visual_change_detection": True,
+        },
+        "batch_intelligence": {
+            "available": True,
+            "max_sources": 32,
+            "max_concurrency": 4,
+            "cross_video_search": True,
+            "comparison": True,
+            "persistent_results": True,
         },
     }
 
@@ -1501,6 +1524,143 @@ async def inspect_ocular_audio_multimodal_moment(
         return result
     except Exception as exc:
         return [f"Error during multimodal moment inspection: {exc}"]
+
+
+@mcp.tool()
+async def analyze_ocular_audio_batch(
+    manifest_json: str,
+    query: str = "",
+    interval_seconds: float = 10,
+    window_seconds: float = 5,
+    top_k: int = 8,
+    enable_ocr: bool = True,
+    use_local_whisper: bool = True,
+    max_concurrency: int = 2,
+    force: bool = False,
+) -> str:
+    """Analyze multiple media sources with bounded concurrency and isolated failures."""
+    try:
+        sources = parse_batch_manifest(manifest_json)
+        if not sources:
+            return json.dumps({"error": "Batch manifest contains no valid sources."}, ensure_ascii=False)
+        concurrency = validate_concurrency(max_concurrency)
+        options = {"interval_seconds": interval_seconds, "window_seconds": window_seconds,
+                   "top_k": top_k, "enable_ocr": enable_ocr, "use_local_whisper": use_local_whisper}
+        batch_id = stable_batch_id(sources, query, options)
+        if not force:
+            cached = read_batch_result(BATCH_CACHE_DIR, batch_id)
+            if cached:
+                return json.dumps(cached, ensure_ascii=False, indent=2)
+
+        async def worker(source):
+            raw = await analyze_ocular_audio_multimodal(
+                url=source.url, query=query, interval_seconds=interval_seconds,
+                window_seconds=window_seconds, top_k=top_k, enable_ocr=enable_ocr,
+                use_local_whisper=use_local_whisper, force=force)
+            payload = json.loads(raw)
+            if payload.get("error"):
+                raise RuntimeError(payload["error"])
+            return payload
+
+        items = await run_batch(sources, worker, max_concurrency=concurrency)
+        summary = summarize_batch(items)
+        payload = {
+            "batch_id": batch_id, "query": query.strip(),
+            "options": {**options, "max_concurrency": concurrency},
+            "summary": summary, "sources": [item.to_dict() for item in items],
+            "results": rank_cross_video_results(items, query, top_k=max(1, min(top_k, 100))),
+        }
+        write_batch_result(BATCH_CACHE_DIR, batch_id, payload)
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def search_ocular_audio_videos(
+    sources_json: str,
+    query: str,
+    top_k: int = 12,
+    interval_seconds: float = 10,
+    window_seconds: float = 5,
+    enable_ocr: bool = True,
+    use_local_whisper: bool = True,
+    max_concurrency: int = 2,
+) -> str:
+    """Search multimodal evidence across multiple videos with one unified ranking."""
+    return await analyze_ocular_audio_batch(
+        manifest_json=sources_json, query=query, interval_seconds=interval_seconds,
+        window_seconds=window_seconds, top_k=top_k, enable_ocr=enable_ocr,
+        use_local_whisper=use_local_whisper, max_concurrency=max_concurrency)
+
+
+@mcp.tool()
+async def compare_ocular_audio_videos(
+    sources_json: str,
+    query: str = "",
+    interval_seconds: float = 10,
+    window_seconds: float = 5,
+    enable_ocr: bool = True,
+    use_local_whisper: bool = True,
+    max_concurrency: int = 2,
+) -> str:
+    """Build a comparable per-video scorecard for the same multimodal query."""
+    try:
+        batch_payload = json.loads(await analyze_ocular_audio_batch(
+            manifest_json=sources_json, query=query, interval_seconds=interval_seconds,
+            window_seconds=window_seconds, top_k=50, enable_ocr=enable_ocr,
+            use_local_whisper=use_local_whisper, max_concurrency=max_concurrency))
+        if batch_payload.get("error"):
+            return json.dumps(batch_payload, ensure_ascii=False, indent=2)
+        items = []
+        for item in batch_payload.get("sources", []):
+            source = item.get("source", {})
+            items.append(BatchItem(
+                source=BatchSource(
+                    source_id=str(source.get("source_id", "")),
+                    url=str(source.get("url", "")),
+                    label=str(source.get("label", "")),
+                    metadata=source.get("metadata")),
+                status=str(item.get("status", "error")),
+                result=item.get("result"), error=str(item.get("error", ""))))
+        return json.dumps({
+            "batch_id": batch_payload.get("batch_id"), "query": query.strip(),
+            "comparison": compare_batch_results(items, query),
+        }, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def get_ocular_audio_batch(batch_id: str) -> str:
+    """Retrieve a persisted Phase 6 batch result by deterministic batch ID."""
+    if not re.fullmatch(r"[0-9a-f]{24}", batch_id or ""):
+        return json.dumps({"error": "Invalid batch_id."}, ensure_ascii=False)
+    payload = read_batch_result(BATCH_CACHE_DIR, batch_id)
+    if not payload:
+        return json.dumps({"error": "Batch result not found."}, ensure_ascii=False)
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+async def list_ocular_audio_batches(limit: int = 20) -> str:
+    """List recent persisted batch results without loading individual media."""
+    limit = max(1, min(int(limit), 100))
+    records = []
+    paths = sorted(BATCH_CACHE_DIR.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
+    for path in paths[:limit]:
+        payload = read_batch_result(BATCH_CACHE_DIR, path.stem)
+        if not payload:
+            continue
+        summary = payload.get("summary", {})
+        records.append({
+            "batch_id": path.stem, "query": payload.get("query", ""),
+            "source_count": summary.get("source_count", 0),
+            "success_count": summary.get("success_count", 0),
+            "error_count": summary.get("error_count", 0),
+            "moment_count": summary.get("moment_count", 0),
+        })
+    return json.dumps({"count": len(records), "batches": records}, ensure_ascii=False, indent=2)
 
 
 async def search_ocular_audio_hybrid_cache(
