@@ -159,6 +159,7 @@ def _check_system_capabilities() -> dict:
         "supported_source_types": ["web_url", "local_file", "direct_media_url", "live_url", "stream_url"],
         "source_coverage": universal_capabilities(),
         "capability_modes": mode_capabilities(),
+        "security": DEPLOYMENT_SECURITY.public_summary(),
         "ffmpeg": False,
         "whisper": {"available": False, "engine": None, "model_size": None},
         "tesseract": {"available": False, "path": None},
