@@ -115,6 +115,7 @@ OPTIONS
                             deep      — Screenshots at important moments
                             auto      — Adapts to video length and content
 
+  --mode <mode>              Capability mode: auto, lite, intelligence, deep
   --analysis-depth <level> Universal ingestion depth
                             glance      — Minimal, fastest
                             understand  — Recommended default
@@ -176,6 +177,7 @@ const args = process.argv.slice(2);
 
 let detailLevel = 'auto';
 let analysisDepth = 'understand';
+let capabilityMode = 'auto';
 let targetUrl = null;
 let stdoutMode = false;
 let noClipboard = false;
@@ -335,6 +337,14 @@ for (let i = 0; i < args.length; i++) {
     i++;
     continue;
   }
+  if (arg === '--mode' && i + 1 < args.length) {
+    const valid = ['auto', 'lite', 'intelligence', 'deep', 'light', 'smart', 'standard', 'maximum', 'extreme'];
+    const val = args[i + 1].toLowerCase();
+    if (!valid.includes(val)) { console.error(`[ERROR] Invalid capability mode: ${val}`); process.exit(1); }
+    capabilityMode = val;
+    i++;
+    continue;
+  }
   if (arg === '--analysis-depth' && i + 1 < args.length) {
     const valid = ['glance', 'understand', 'deep', 'omniscient', 'minimal', 'standard', 'normal', 'maximum', 'extreme'];
     const val = args[i + 1].toLowerCase();
@@ -468,7 +478,7 @@ if (!localSource && !/^(?:https?|rtmp(?:s|e|t|ts)?|rtsp|srt|udp):\/\//i.test(tar
 const pythonScriptPath = path.join(__dirname, '..', 'ocular_audio_mcp.py');
 const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
 
-const pyArgs = [pythonScriptPath, targetUrl, detailLevel, '--analysis-depth', analysisDepth];
+const pyArgs = [pythonScriptPath, targetUrl, detailLevel, '--analysis-depth', analysisDepth, '--mode', capabilityMode];
 if (stdoutMode) pyArgs.push('--stdout');
 if (noClipboard) pyArgs.push('--no-clipboard');
 if (jsonMode) pyArgs.push('--json');
@@ -501,6 +511,7 @@ if (!stdoutMode && !jsonMode && !quietMode) {
   console.log(chalk.cyan(`[INFO] OcularAudio MCP v${VERSION}`));
   console.log(chalk.gray(`[INFO] Detail level: ${detailLevel}`));
   console.log(chalk.gray(`[INFO] Analysis depth: ${analysisDepth}`));
+  console.log(chalk.gray(`[INFO] Capability mode: ${capabilityMode}`));
   if (forceMode) console.log(chalk.yellow(`[INFO] Cache bypass: enabled`));
   if (outputFile) console.log(chalk.gray(`[INFO] Output file: ${outputFile}`));
   console.log(chalk.gray(`[INFO] Processing...\n`));
