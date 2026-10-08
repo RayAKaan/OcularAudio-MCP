@@ -2642,6 +2642,22 @@ if __name__ == "__main__":
                 ))
                 return
 
+            if "--health" in sys.argv:
+                print(await get_ocular_audio_health())
+                return
+            if "--audit" in sys.argv:
+                print(await get_ocular_audio_audit())
+                return
+            if "--plan" in sys.argv or "--agentic" in sys.argv:
+                flag = "--plan" if "--plan" in sys.argv else "--agentic"
+                idx = sys.argv.index(flag)
+                query_value = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else ""
+                if flag == "--plan":
+                    print(await plan_ocular_audio_analysis(query=query_value))
+                else:
+                    print(await run_ocular_audio_analysis(url=target_url, query=query_value))
+                return
+
             if batch_manifest_file:
                 try:
                     manifest_text = Path(batch_manifest_file).read_text(encoding="utf-8")
