@@ -301,6 +301,46 @@ YouTube may block transcript access for age-restricted or private videos. To fix
 
 The server will automatically detect and use the cookies file.
 
+## Phase 2: Evidence Retrieval Layer
+
+Phase 2 turns cached media understanding into a timestamp-addressable evidence layer. Retrieval is deterministic and local-first: the same transcript produces the same ranked evidence without requiring an embedding service or external model.
+
+### Evidence model
+
+Every timestamped transcript segment becomes an evidence record with:
+- Stable evidence ID
+- Start/end timestamps
+- Transcript text
+- Chapter association when available
+- Deterministic relevance score
+
+### Retrieval tools
+
+### `search_ocular_audio_video`
+
+Searches one video for a natural-language query and returns ranked timestamped evidence plus suggested inspection windows.
+
+**Parameters:**
+- `url` (string): Media source
+- `query` (string): What to find
+- `top_k` (integer, default: 8): Maximum evidence results
+- `min_score` (number, default: 0): Optional relevance threshold
+- `use_local_whisper` (boolean, default: true): Populate transcript evidence when needed
+
+### `get_ocular_audio_video_timeline`
+
+Returns timestamped transcript evidence for a bounded section without returning the entire transcript.
+
+### `inspect_ocular_audio_moment`
+
+Combines nearby transcript evidence with a targeted frame at an exact timestamp. Optional OCR can be enabled for visible text.
+
+### `search_ocular_audio_cache`
+
+Searches every locally cached transcript and returns the strongest matching evidence across videos.
+
+This establishes the Phase 2 retrieval contract used by later semantic, visual, and embedding-backed retrieval phases.
+
 ## Phase 1: Universal Media Foundation
 
 Phase 1 introduces the canonical source layer used by the existing extraction pipeline.
