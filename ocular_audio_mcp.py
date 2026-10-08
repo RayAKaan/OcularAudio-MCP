@@ -74,6 +74,7 @@ from capability_modes import get_mode_policy, mode_capabilities, mode_output_con
 from deployment_security import build_auth_settings, load_deployment_security, StaticBearerTokenVerifier
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.transport_security import TransportSecuritySettings
+from runtime_ops import GLOBAL_METRICS, ReadinessCheck, build_readiness
 from agentic_index import (
     ExecutionPolicy,
     append_audit_record,
@@ -2622,6 +2623,29 @@ async def ocular_audio_health_resource() -> str:
     )
 
 
+@mcp.resource("ocularaudio://readiness", mime_type="application/json")
+async def ocular_audio_readiness_resource() -> str:
+    """Expose machine-readable readiness state for deployment probes."""
+    caps = _check_system_capabilities()
+    checks = [
+        ReadinessCheck("cache", CACHE_DIR.exists() and CACHE_DIR.is_dir(), str(CACHE_DIR)),
+        ReadinessCheck("batch_cache", BATCH_CACHE_DIR.exists() and BATCH_CACHE_DIR.is_dir(), str(BATCH_CACHE_DIR)),
+        ReadinessCheck("opencv", bool(caps.get("opencv")), "OpenCV import"),
+        ReadinessCheck("ffmpeg", bool(caps.get("ffmpeg")), "FFmpeg executable"),
+    ]
+    return json.dumps(
+        build_readiness(checks=checks, version=__version__, metrics=GLOBAL_METRICS),
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+@mcp.resource("ocularaudio://metrics", mime_type="application/json")
+async def ocular_audio_metrics_resource() -> str:
+    """Expose bounded process-local operational metrics."""
+    return json.dumps(GLOBAL_METRICS.snapshot(), ensure_ascii=False, indent=2)
+
+
 @mcp.resource("ocularaudio://contract", mime_type="application/json")
 async def ocular_audio_contract_resource() -> str:
     """Expose the machine-readable MCP contract as an MCP resource."""
@@ -2630,6 +2654,11 @@ async def ocular_audio_contract_resource() -> str:
         ensure_ascii=False,
         indent=2,
     )
+
+
+def build_streamable_http_app():
+    """Build the configured Streamable HTTP ASGI application for tests/hosts."""
+    return mcp.streamable_http_app(transport_security=TRANSPORT_SECURITY)
 
 
 if __name__ == "__main__":
