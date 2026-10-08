@@ -2036,6 +2036,26 @@ if __name__ == "__main__":
         json_output = "--json" in sys.argv
         stdout_mode = "--stdout" in sys.argv
         enable_ocr = "--ocr" in sys.argv
+        visual_index_mode = "--visual-index" in sys.argv
+        visual_search_query = None
+        frame_at = None
+        frame_burst = None
+        if "--visual-search" in sys.argv:
+            idx = sys.argv.index("--visual-search")
+            if idx + 1 < len(sys.argv):
+                visual_search_query = sys.argv[idx + 1]
+        if "--frame-at" in sys.argv:
+            idx = sys.argv.index("--frame-at")
+            if idx + 1 < len(sys.argv):
+                frame_at = float(sys.argv[idx + 1])
+        if "--frame-burst" in sys.argv:
+            idx = sys.argv.index("--frame-burst")
+            if idx + 3 < len(sys.argv):
+                frame_burst = (
+                    float(sys.argv[idx + 1]),
+                    float(sys.argv[idx + 2]),
+                    int(sys.argv[idx + 3]),
+                )
         analysis_depth = "understand"
         if "--analysis-depth" in sys.argv:
             idx = sys.argv.index("--analysis-depth")
@@ -2058,6 +2078,45 @@ if __name__ == "__main__":
         async def run_standalone():
             start_time = time.time()
             log.info("Processing target resource: %s (detail: %s)", target_url, detail_level)
+
+            # ── Phase 3 visual commands ───────────────────────────────────
+            if visual_index_mode:
+                print(await index_ocular_audio_video_visuals(
+                    url=target_url,
+                    enable_ocr=enable_ocr,
+                    force=force_mode,
+                ))
+                return
+
+            if visual_search_query is not None:
+                print(await search_ocular_audio_visuals(
+                    url=target_url,
+                    query=visual_search_query,
+                ))
+                return
+
+            if frame_at is not None:
+                result = await get_ocular_audio_video_frame(
+                    url=target_url,
+                    timestamp_seconds=frame_at,
+                    enable_ocr=enable_ocr,
+                )
+                for item in result:
+                    print(item.path if hasattr(item, "path") else item)
+                return
+
+            if frame_burst is not None:
+                center, radius, count = frame_burst
+                result = await get_ocular_audio_video_frame_burst(
+                    url=target_url,
+                    center_seconds=center,
+                    radius_seconds=radius,
+                    count=count,
+                    enable_ocr=enable_ocr,
+                )
+                for item in result:
+                    print(item.path if hasattr(item, "path") else item)
+                return
 
             # ── JSON mode: call underlying functions for structured data ─────
             if json_output:
