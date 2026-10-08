@@ -1,0 +1,13 @@
+.git
+.github
+__pycache__
+*.pyc
+.venv
+venv
+node_modules
+npm-debug.log
+tests
+*.tgz
+cookies.txt
+.env
+.cache
