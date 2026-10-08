@@ -19,7 +19,7 @@ class ProtocolContractTests(unittest.TestCase):
 
     def test_all_tools_have_unique_contracts(self):
         contracts = tool_contracts()
-        self.assertEqual(31, len(contracts))
+        self.assertEqual(32, len(contracts))
         self.assertEqual(31, len({item["name"] for item in contracts}))
 
     def test_destructive_cache_tool_is_annotated(self):
