@@ -136,6 +136,10 @@ OPTIONS
   --batch-search <q> <file>
                           Search multimodal evidence across a batch
   --batch-compare <file> Compare batch sources with a unified scorecard
+  --plan <query>         Build a deterministic analysis plan
+  --agentic <query>      Execute the analysis plan with retries/timeouts
+  --health                Show dependency/cache health
+  --audit                 Show recent execution audit records
   --ocr                   Extract text from screenshots using Tesseract OCR
                             Requires: brew install tesseract (macOS) / choco install tesseract (Windows) / apt install tesseract-ocr (Linux)
                             Also requires: pip install pytesseract
@@ -196,6 +200,10 @@ let multimodalMode = false;
 let batchManifestFile = null;
 let batchSearchQuery = null;
 let batchCompareMode = false;
+let planQuery = null;
+let agenticQuery = null;
+let healthMode = false;
+let auditMode = false;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -268,6 +276,22 @@ for (let i = 0; i < args.length; i++) {
   if (arg === '--batch-compare' && i + 1 < args.length) {
     batchCompareMode = true;
     batchManifestFile = args[++i];
+    continue;
+  }
+  if (arg === '--plan' && i + 1 < args.length) {
+    planQuery = args[++i];
+    continue;
+  }
+  if (arg === '--agentic' && i + 1 < args.length) {
+    agenticQuery = args[++i];
+    continue;
+  }
+  if (arg === '--health') {
+    healthMode = true;
+    continue;
+  }
+  if (arg === '--audit') {
+    auditMode = true;
     continue;
   }
   if (arg === '--check') {
@@ -424,6 +448,7 @@ if (checkMode) {
 
 // ── Validate URL ────────────────────────────────────────────────────────────
 if (!targetUrl && batchManifestFile) targetUrl = batchManifestFile;
+if (!targetUrl && (healthMode || auditMode || planQuery !== null || agenticQuery !== null)) targetUrl = "local";
 
 if (!targetUrl) {
   console.error(chalk.red('[ERROR] No video URL provided.'));
@@ -459,6 +484,10 @@ if (multimodalMode) pyArgs.push('--multimodal');
 if (batchManifestFile) pyArgs.push('--batch', batchManifestFile);
 if (batchSearchQuery !== null) pyArgs.push('--batch-search', batchSearchQuery);
 if (batchCompareMode) pyArgs.push('--batch-compare');
+if (planQuery !== null) pyArgs.push('--plan', planQuery);
+if (agenticQuery !== null) pyArgs.push('--agentic', agenticQuery);
+if (healthMode) pyArgs.push('--health');
+if (auditMode) pyArgs.push('--audit');
 if (forceMode) pyArgs.push('--force');
 if (verboseMode) pyArgs.push('--verbose');
 if (quietMode) pyArgs.push('--quiet');

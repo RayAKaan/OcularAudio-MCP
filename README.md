@@ -524,6 +524,64 @@ npx ocular-audio --frame-burst 120 10 5 "URL"
 
 
  
+## Phase 7: Agentic Intelligence & Production Hardening
+
+Phase 7 is the orchestration and reliability layer over Phases 1–6. It turns the existing evidence capabilities into an inspectable execution plan, applies bounded retry/timeout policy, records execution evidence, and exposes operational health without requiring a hosted LLM.
+
+### Agentic planning
+
+**`plan_ocular_audio_analysis`** classifies an analysis request and produces a deterministic execution plan. Plans expose their intent, ordered operations, reasons, policy, and stable plan ID.
+
+Supported intents include:
+- source inspection
+- transcript/visual hybrid search
+- visual moment inspection
+- OCR inspection
+- timeline retrieval
+- cross-video search
+- cross-video comparison
+
+**`run_ocular_audio_analysis`** executes that plan through the existing MCP capabilities. Every step is bounded by a timeout and retry policy and produces an audit record.
+
+### Production hardening
+
+- Timeout bounds: 1–900 seconds.
+- Retry bounds: 0–3 retries.
+- Exponential retry backoff.
+- Explicit cancellation propagation.
+- Query size bounded to 1,000 characters.
+- Plan size bounded to 8 steps.
+- Structured per-step audit records in local JSONL.
+- Health reporting for FFmpeg, OpenCV, Whisper, Tesseract, and cache state.
+- No new external service is required for Phase 7.
+
+### MCP tools
+
+#### `plan_ocular_audio_analysis`
+Builds an inspectable execution plan without processing media.
+
+#### `run_ocular_audio_analysis`
+Executes the plan with timeout/retry controls and returns plan, results, and audit records.
+
+#### `get_ocular_audio_health`
+Returns dependency and cache health plus actionable warnings.
+
+#### `get_ocular_audio_audit`
+Returns recent local execution records.
+
+### CLI
+
+```bash
+npx ocular-audio --plan "find the pricing chart"
+npx ocular-audio --agentic "find the pricing chart" "URL"
+npx ocular-audio --health
+npx ocular-audio --audit
+```
+
+### Versioning
+
+OcularAudio's package version remains **1.3.0** across all roadmap phases. Phase numbers identify architectural increments and PRs; they do not imply package version bumps.
+
 ## Phase 6: Batch & Multi-Video Intelligence
 
 Phase 6 extends the multimodal evidence contract from one source to a bounded collection of sources. It reuses the existing transcript, visual, OCR, and multimodal layers rather than creating a second retrieval stack.

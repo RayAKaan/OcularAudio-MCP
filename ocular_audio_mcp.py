@@ -66,8 +66,16 @@ from batch_index import (
     validate_concurrency,
     write_batch_result,
 )
+from agentic_index import (
+    ExecutionPolicy,
+    append_audit_record,
+    build_execution_plan,
+    execute_with_policy,
+    health_report,
+    read_audit_records,
+)
 
-__version__ = "1.8.0"
+__version__ = "1.3.0"
 
 # Configure logging to stderr so it does NOT corrupt the MCP stdio protocol
 logging.basicConfig(
@@ -88,6 +96,7 @@ VISUAL_INDEX_VERSION = 1
 VISUAL_MAX_FRAMES = 240
 BATCH_CACHE_DIR = CACHE_DIR / "batches"
 BATCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+AUDIT_LOG_PATH = CACHE_DIR / "audit.jsonl"
 
 # Cache expiration: 7 days in seconds
 CACHE_MAX_AGE = 7 * 24 * 60 * 60
@@ -138,6 +147,14 @@ def _check_system_capabilities() -> dict:
             "cross_video_search": True,
             "comparison": True,
             "persistent_results": True,
+        },
+        "agentic_intelligence": {
+            "available": True,
+            "deterministic_planning": True,
+            "max_steps": 8,
+            "retry_policy": True,
+            "timeout_policy": True,
+            "audit_log": str(AUDIT_LOG_PATH),
         },
     }
 
@@ -1527,6 +1544,102 @@ async def inspect_ocular_audio_multimodal_moment(
 
 
 @mcp.tool()
+async def plan_ocular_audio_analysis(
+    query: str = "",
+    multi_video: bool = False,
+    timeout_seconds: float = 120,
+    max_retries: int = 2,
+) -> str:
+    """Build a deterministic, inspectable execution plan for an analysis request."""
+    try:
+        policy = ExecutionPolicy(timeout_seconds=timeout_seconds, max_retries=max_retries).validate()
+        return json.dumps(
+            build_execution_plan(query, multi_video=multi_video, policy=policy).to_dict(),
+            ensure_ascii=False,
+            indent=2,
+        )
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def get_ocular_audio_health() -> str:
+    """Return dependency, cache, and production-readiness health checks."""
+    return json.dumps(
+        health_report(
+            _check_system_capabilities(),
+            cache_dir=CACHE_DIR,
+            batch_cache_dir=BATCH_CACHE_DIR,
+        ),
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+@mcp.tool()
+async def get_ocular_audio_audit(limit: int = 50) -> str:
+    """Return recent local execution audit records."""
+    return json.dumps(
+        {"count": len(read_audit_records(AUDIT_LOG_PATH, limit)), "records": read_audit_records(AUDIT_LOG_PATH, limit)},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+@mcp.tool()
+async def run_ocular_audio_analysis(
+    url: str,
+    query: str = "",
+    multi_video: bool = False,
+    timeout_seconds: float = 120,
+    max_retries: int = 2,
+) -> str:
+    """Execute the deterministic analysis plan using existing evidence tools."""
+    try:
+        policy = ExecutionPolicy(timeout_seconds=timeout_seconds, max_retries=max_retries).validate()
+        plan = build_execution_plan(query, multi_video=multi_video, policy=policy)
+        outputs = []
+        for step in plan.steps:
+            if step.operation == "inspect_source":
+                worker = lambda: inspect_ocular_audio_source(url)
+            elif step.operation == "search_hybrid":
+                worker = lambda: search_ocular_audio_hybrid(url=url, query=query, top_k=8)
+            elif step.operation == "inspect_moment":
+                evidence = await search_ocular_audio_hybrid(url=url, query=query, top_k=1)
+                payload = json.loads(evidence)
+                timestamp = float((payload.get("results") or [{}])[0].get("start_seconds", 0))
+                worker = lambda: inspect_ocular_audio_moment(url=url, timestamp_seconds=timestamp)
+            elif step.operation == "search_visual":
+                worker = lambda: search_ocular_audio_visuals(url=url, query=query, top_k=8)
+            elif step.operation == "timeline":
+                worker = lambda: get_ocular_audio_video_timeline(url=url)
+            elif step.operation == "search_batch":
+                worker = lambda: search_ocular_audio_videos(sources_json=url, query=query, top_k=12)
+            elif step.operation == "compare_batch":
+                worker = lambda: compare_ocular_audio_videos(sources_json=url, query=query)
+            else:
+                raise ValueError(f"Unsupported plan operation: {step.operation}")
+
+            result, audit = await execute_with_policy(step.operation, worker, policy)
+            append_audit_record(AUDIT_LOG_PATH, audit)
+            outputs.append({
+                "step": step.to_dict(),
+                "audit": audit.to_dict(),
+                "result": result,
+            })
+            if audit.status != "success" and step.required:
+                break
+
+        return json.dumps({
+            "plan": plan.to_dict(),
+            "completed_steps": len(outputs),
+            "results": outputs,
+        }, ensure_ascii=False, indent=2, default=str)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
 async def analyze_ocular_audio_batch(
     manifest_json: str,
     query: str = "",
@@ -2527,6 +2640,22 @@ if __name__ == "__main__":
                     enable_ocr=True,
                     use_local_whisper=True,
                 ))
+                return
+
+            if "--health" in sys.argv:
+                print(await get_ocular_audio_health())
+                return
+            if "--audit" in sys.argv:
+                print(await get_ocular_audio_audit())
+                return
+            if "--plan" in sys.argv or "--agentic" in sys.argv:
+                flag = "--plan" if "--plan" in sys.argv else "--agentic"
+                idx = sys.argv.index(flag)
+                query_value = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else ""
+                if flag == "--plan":
+                    print(await plan_ocular_audio_analysis(query=query_value))
+                else:
+                    print(await run_ocular_audio_analysis(url=target_url, query=query_value))
                 return
 
             if batch_manifest_file:
