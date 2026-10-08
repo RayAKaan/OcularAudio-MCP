@@ -182,9 +182,9 @@ def server_contract(version: str, capabilities: dict[str, Any], prompts: list[di
             "text_content": True,
             "structured_content": True,
             "legacy_mcp_clients": True,
+        },
         "transports": ["stdio", "streamable-http"],
         "superseded_transports": ["sse"],
-        },
     }
 
 
