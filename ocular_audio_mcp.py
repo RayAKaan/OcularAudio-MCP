@@ -28,8 +28,15 @@ from media_resolver import (
     stable_source_id,
     classify_source,
 )
+from evidence_index import (
+    build_evidence_segments,
+    format_timestamp,
+    nearest_evidence,
+    search_evidence,
+    timeline_window,
+)
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 # Configure logging to stderr so it does NOT corrupt the MCP stdio protocol
 logging.basicConfig(
@@ -1435,6 +1442,196 @@ async def get_ocular_audio_video_context(
             result.append(item)
 
     return result
+
+
+
+async def _ensure_evidence_cache(url: str, use_local_whisper: bool = True) -> tuple[str, dict]:
+    """Return cached transcript evidence, populating the cache when necessary."""
+    cache_id = _cache_id(url)
+    cached = read_from_cache(cache_id)
+    if cached:
+        return cache_id, cached
+    await get_ocular_audio_transcript(url, use_local_whisper=use_local_whisper)
+    cached = read_from_cache(cache_id)
+    if not cached:
+        raise RuntimeError("Transcript evidence is unavailable; run transcription successfully first.")
+    return cache_id, cached
+
+
+def _evidence_payload(segment) -> dict:
+    return {
+        "evidence_id": segment.evidence_id,
+        "timestamp": format_timestamp(segment.start_seconds),
+        "start_seconds": segment.start_seconds,
+        "end_seconds": segment.end_seconds,
+        "score": segment.score,
+        "chapter": segment.chapter,
+        "text": segment.text,
+        "source": segment.source,
+    }
+
+
+@mcp.tool()
+async def search_ocular_audio_video(
+    url: str,
+    query: str,
+    top_k: int = 8,
+    min_score: float = 0.0,
+    use_local_whisper: bool = True,
+) -> str:
+    """Search a video's timestamped transcript evidence and return ranked moments."""
+    if not query or not query.strip():
+        return json.dumps({"error": "query must not be empty"}, ensure_ascii=False)
+    try:
+        cache_id, cached = await _ensure_evidence_cache(url, use_local_whisper)
+        metadata = cached.get("metadata", {})
+        source = metadata.get("source", {})
+        duration = _parse_duration_str(metadata.get("duration", "0"))
+        if not duration:
+            duration = float(source.get("duration_seconds") or 0)
+        segments = build_evidence_segments(
+            cached.get("transcript", ""),
+            duration_seconds=duration,
+            chapters=metadata.get("chapters", []),
+        )
+        results = search_evidence(segments, query, top_k=top_k, min_score=min_score)
+        payload = {
+            "source_id": cache_id,
+            "url": url,
+            "title": metadata.get("title", "Unknown"),
+            "query": query.strip(),
+            "result_count": len(results),
+            "results": [
+                {
+                    **_evidence_payload(item),
+                    "suggested_window": {
+                        "start_seconds": max(0, item.start_seconds - 5),
+                        "end_seconds": item.end_seconds + 5,
+                    },
+                }
+                for item in results
+            ],
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log.warning("Evidence search failed: %s", exc)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def get_ocular_audio_video_timeline(
+    url: str,
+    start_seconds: float = 0,
+    end_seconds: float = -1,
+    use_local_whisper: bool = True,
+) -> str:
+    """Return timestamped transcript evidence for a bounded section of a video."""
+    try:
+        cache_id, cached = await _ensure_evidence_cache(url, use_local_whisper)
+        metadata = cached.get("metadata", {})
+        duration = _parse_duration_str(metadata.get("duration", "0"))
+        segments = build_evidence_segments(
+            cached.get("transcript", ""),
+            duration_seconds=duration,
+            chapters=metadata.get("chapters", []),
+        )
+        end = None if end_seconds < 0 else max(start_seconds, end_seconds)
+        selected = timeline_window(segments, start_seconds, end)
+        return json.dumps({
+            "source_id": cache_id,
+            "url": url,
+            "title": metadata.get("title", "Unknown"),
+            "start_seconds": max(0, start_seconds),
+            "end_seconds": end,
+            "segments": [_evidence_payload(item) for item in selected],
+        }, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def inspect_ocular_audio_moment(
+    url: str,
+    timestamp_seconds: float,
+    window_seconds: float = 15,
+    enable_ocr: bool = False,
+    use_local_whisper: bool = True,
+) -> list:
+    """Inspect one moment with the nearest transcript evidence and a targeted frame."""
+    if timestamp_seconds < 0:
+        return ["Error: timestamp_seconds must be >= 0."]
+    try:
+        cache_id, cached = await _ensure_evidence_cache(url, use_local_whisper)
+        metadata = cached.get("metadata", {})
+        duration = _parse_duration_str(metadata.get("duration", "0"))
+        segments = build_evidence_segments(
+            cached.get("transcript", ""),
+            duration_seconds=duration,
+            chapters=metadata.get("chapters", []),
+        )
+        nearest = nearest_evidence(segments, timestamp_seconds)
+        start = max(0, timestamp_seconds - max(0, window_seconds))
+        end = timestamp_seconds + max(0, window_seconds)
+        nearby = timeline_window(segments, start, end)
+        frame_payload = await asyncio.wait_for(
+            asyncio.to_thread(
+                _blocking_screenshot_extractor,
+                url,
+                [int(timestamp_seconds)],
+                find_cookies_file(),
+                enable_ocr,
+            ),
+            timeout=NETWORK_TIMEOUT,
+        )
+        result = [
+            json.dumps({
+                "source_id": cache_id,
+                "url": url,
+                "timestamp_seconds": timestamp_seconds,
+                "timestamp": format_timestamp(timestamp_seconds),
+                "nearest_evidence": _evidence_payload(nearest) if nearest else None,
+                "nearby_evidence": [_evidence_payload(item) for item in nearby],
+            }, ensure_ascii=False, indent=2)
+        ]
+        result.extend(frame_payload)
+        return result
+    except asyncio.TimeoutError:
+        return [f"Error: Moment inspection timed out after {NETWORK_TIMEOUT} seconds."]
+    except Exception as exc:
+        return [f"Error during moment inspection: {exc}"]
+
+
+@mcp.tool()
+async def search_ocular_audio_cache(query: str, top_k: int = 10) -> str:
+    """Search all locally cached transcripts and return ranked timestamped evidence."""
+    if not query or not query.strip():
+        return json.dumps({"error": "query must not be empty"}, ensure_ascii=False)
+    matches = []
+    for cache_file in CACHE_DIR.glob("*.json"):
+        cached = read_from_cache(cache_file.stem)
+        if not cached:
+            continue
+        metadata = cached.get("metadata", {})
+        duration = _parse_duration_str(metadata.get("duration", "0"))
+        segments = build_evidence_segments(
+            cached.get("transcript", ""),
+            duration_seconds=duration,
+            chapters=metadata.get("chapters", []),
+        )
+        for item in search_evidence(segments, query, top_k=min(top_k, 10)):
+            title = metadata.get("title", "Unknown")
+            matches.append({
+                **_evidence_payload(item),
+                "source_id": cache_file.stem,
+                "title": title,
+                "uploader": metadata.get("uploader", ""),
+            })
+    matches.sort(key=lambda item: (-item["score"], item["source_id"], item["start_seconds"]))
+    return json.dumps({
+        "query": query.strip(),
+        "result_count": min(len(matches), max(1, min(int(top_k), 50))),
+        "results": matches[:max(1, min(int(top_k), 50))],
+    }, ensure_ascii=False, indent=2)
 
 
 def copy_to_clipboard_native(text: str) -> bool:
