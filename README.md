@@ -1,5 +1,57 @@
 
-## Phase 9: Three-Level Capability Architecture
+## Phase 10: MCP Protocol Modernization & Interoperability
+
+Phase 10 upgrades OcularAudio to the current MCP Python SDK v2 line and makes the server self-describing at the protocol layer. The application remains local-first and the package version remains **1.3.0**.
+
+### MCP SDK v2
+
+OcularAudio now uses `MCPServer` and the v2 server import surface. The dependency is explicitly bounded to `mcp>=2.0.0,<3`, preventing an accidental future-major resolution while keeping the server on the current MCP SDK line.
+
+The server advertises its application version as `1.3.0` independently of the installed MCP SDK version.
+
+### Protocol contract
+
+The new `protocol_contract.py` module defines one stable machine-readable contract containing:
+
+- MCP protocol revision target: `2026-07-28`
+- 31 MCP tools with behavioral metadata
+- 4 MCP resources
+- capability-mode policy metadata
+- universal source coverage
+- structured-content and legacy-client compatibility flags
+
+The `get_ocular_audio_contract` tool returns this contract as structured MCP output, so clients can consume it programmatically instead of parsing prose.
+
+### MCP resources
+
+The server exposes:
+
+| Resource | Purpose |
+|---|---|
+| `ocularaudio://capabilities` | Current dependencies and available capabilities |
+| `ocularaudio://modes` | Lite / Intelligence / Deep / Auto policies |
+| `ocularaudio://health` | Current health and cache checks |
+| `ocularaudio://contract` | Full machine-readable protocol contract |
+
+Resources are application-readable context; tools remain model-invoked actions. citeturn1search0turn5search1
+
+### Tool behavior annotations
+
+All 31 tools receive stable MCP behavioral hints for read-only, destructive, idempotent, and open-world behavior. These annotations help capable MCP hosts present safer tool affordances; they are hints rather than an authorization boundary. citeturn1search2turn0search2
+
+### Validation
+
+Phase 10 CI validates:
+
+1. Python compilation of every server module.
+2. MCP SDK v2 import surface.
+3. MCP `ToolAnnotations` availability.
+4. Full Python unit-test discovery.
+5. Node CLI syntax.
+6. Version consistency across package/server metadata.
+
+The project version remains **1.3.0**.
+\n## Phase 9: Three-Level Capability Architecture
 
 Phase 9 introduces three processing modes over the same universal source layer: **Lite**, **Intelligence**, and **Deep**. All modes accept the same URLs, platforms, direct media sources, streams, and local files. The difference is processing depth, evidence breadth, and response richness.
 
@@ -36,7 +88,7 @@ MCP clients can call `get_ocular_audio_modes` to discover the policies and `conf
 - Mode selection controls analysis policy and output contract, not source coverage.
 - Package version remains **1.3.0**.
 
-The local MCP remains compatible with stdio-style host integration: a host launches the local process and exchanges MCP messages over stdin/stdout. MCP's stdio transport is specifically intended for local child-process integrations. citeturn0search1turn0search3
+The local MCP remains compatible with stdio-style host integration: a host launches the local process and exchanges MCP messages over stdin/stdout.
 # OcularAudio MCP
 
 ![OcularAudio MCP](OcularAudioMCP.png)
