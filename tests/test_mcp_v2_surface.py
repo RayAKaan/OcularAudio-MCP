@@ -42,7 +42,7 @@ class MCPV2SurfaceTests(unittest.TestCase):
                 prompt_names = {prompt.name for prompt in prompts.prompts}
 
                 self.assertIn("get_ocular_audio_contract", tool_names)
-                self.assertEqual(31, len(tool_names))
+                self.assertEqual(32, len(tool_names))
                 self.assertEqual(
                     {
                         "ocularaudio://capabilities",
