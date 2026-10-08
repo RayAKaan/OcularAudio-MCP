@@ -22,6 +22,7 @@
     "prompts.py",
     "protocol_contract.py",
     "requirements.txt",
+    "runtime_ops.py",
     "semantic_index.py",
     "universal_sources.py",
     "visual_index.py"

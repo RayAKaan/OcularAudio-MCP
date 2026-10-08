@@ -36,13 +36,16 @@ class ProtocolContractTests(unittest.TestCase):
 
     def test_resource_catalog(self):
         resources = resource_catalog()
-        self.assertEqual(4, len(resources))
+        self.assertEqual(7, len(resources))
         self.assertEqual(
             {
                 "ocularaudio://capabilities",
                 "ocularaudio://modes",
                 "ocularaudio://health",
                 "ocularaudio://contract",
+                "ocularaudio://security",
+                "ocularaudio://readiness",
+                "ocularaudio://metrics",
             },
             {item["uri"] for item in resources},
         )

@@ -161,6 +161,21 @@ def resource_catalog() -> list[dict[str, str]]:
             "mime_type": "application/json",
             "description": "Machine-readable MCP contract, tool annotations, and resource catalog.",
         },
+        {
+            "uri": "ocularaudio://security",
+            "mime_type": "application/json",
+            "description": "Non-secret deployment security configuration and authentication state.",
+        },
+        {
+            "uri": "ocularaudio://readiness",
+            "mime_type": "application/json",
+            "description": "Readiness checks for dependencies and writable runtime state.",
+        },
+        {
+            "uri": "ocularaudio://metrics",
+            "mime_type": "application/json",
+            "description": "Bounded in-process operation counters and latency summaries.",
+        },
     ]
 
 

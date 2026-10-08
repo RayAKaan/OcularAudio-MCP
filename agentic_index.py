@@ -16,6 +16,8 @@ from pathlib import Path
 import time
 from typing import Any, Awaitable, Callable
 
+from runtime_ops import GLOBAL_METRICS, OperationTimer, rotate_audit_log
+
 
 MAX_QUERY_LENGTH = 1000
 MAX_STEPS = 8
@@ -155,14 +157,17 @@ async def execute_with_policy(
 ) -> tuple[Any, AuditRecord]:
     policy = (policy or ExecutionPolicy()).validate()
     started = time.monotonic()
+    metrics = GLOBAL_METRICS
+    timer = OperationTimer(metrics, operation)
     last_error: Exception | None = None
     for attempt in range(policy.max_retries + 1):
         try:
             result = await asyncio.wait_for(worker(), timeout=policy.timeout_seconds)
+            timer.finish("success")
             return result, AuditRecord(
                 time.time(), operation, "success",
                 round((time.monotonic() - started) * 1000, 3),
-                {"attempt": attempt + 1},
+                {"attempt": attempt + 1, "metrics": metrics.snapshot()},
             )
         except asyncio.CancelledError:
             raise
@@ -170,10 +175,11 @@ async def execute_with_policy(
             last_error = exc
             if attempt < policy.max_retries:
                 await asyncio.sleep(policy.backoff_seconds * (2 ** attempt))
+    timer.finish("error")
     return None, AuditRecord(
         time.time(), operation, "error",
         round((time.monotonic() - started) * 1000, 3),
-        {"attempt": policy.max_retries + 1, "error": str(last_error)},
+        {"attempt": policy.max_retries + 1, "error": str(last_error), "metrics": metrics.snapshot()},
     )
 
 
@@ -207,6 +213,7 @@ def health_report(
 
 def append_audit_record(path: Path, record: AuditRecord) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    rotate_audit_log(path)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
 
