@@ -35,8 +35,8 @@ class ExecutionPolicy:
         retries = int(self.max_retries)
         backoff = float(self.backoff_seconds)
         steps = int(self.max_steps)
-        if not 1 <= timeout <= 900:
-            raise ValueError("timeout_seconds must be between 1 and 900.")
+        if not 0.01 <= timeout <= 900:
+            raise ValueError("timeout_seconds must be between 0.01 and 900.")
         if not 0 <= retries <= MAX_RETRIES:
             raise ValueError(f"max_retries must be between 0 and {MAX_RETRIES}.")
         if not 0 <= backoff <= 30:
@@ -100,12 +100,12 @@ def classify_intent(query: str, multi_video: bool = False) -> str:
         if any(word in text for word in ("compare", "difference", "versus", "vs", "which")):
             return "compare_videos"
         return "search_videos"
+    if any(word in text for word in ("ocr", "text on screen", "written")):
+        return "inspect_ocr"
     if any(word in text for word in ("frame", "show", "screen", "visible", "chart", "diagram")):
         return "inspect_visual"
     if any(word in text for word in ("timeline", "when", "timestamp", "chapter")):
         return "timeline"
-    if any(word in text for word in ("ocr", "text on screen", "written")):
-        return "inspect_ocr"
     if text:
         return "search_video"
     return "inspect_video"
