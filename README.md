@@ -1,7 +1,45 @@
 
+## Phase 13: Runtime Observability, Reliability & Operations
+
+Phase 13 closes the runtime-production gap after transport security: OcularAudio now exposes bounded operational telemetry, explicit readiness state, durable audit retention, and real Streamable HTTP authorization integration coverage. The implementation remains local-first and the project version remains **1.3.0**.
+
+### Operational MCP resources
+
+- `ocularaudio://readiness` — dependency/runtime readiness checks.
+- `ocularaudio://metrics` — bounded process-local counters and latency summaries.
+- `ocularaudio://security` — non-secret transport/authentication state.
+- `ocularaudio://health` — broader dependency health report.
+
+Readiness is deliberately stricter than liveness: a running process can be alive while remaining not ready because required runtime state is unavailable.
+
+### Runtime metrics
+
+Phase 13 records bounded operation counters and latency summaries without requiring Prometheus, Redis, or another external service. This keeps the local deployment zero-infrastructure while providing a stable machine-readable operational surface that a host or deployment adapter can export later.
+
+Metric cardinality and retained samples are bounded to prevent untrusted operation names from becoming an unbounded memory-growth vector.
+
+### Audit retention
+
+The existing JSONL audit trail is now rotated when it exceeds the configured safety threshold. The active audit file is never deleted during rotation, and the number of retained rotated files is bounded.
+
+### Real HTTP integration coverage
+
+The test suite now exercises the actual MCP Streamable HTTP ASGI application:
+
+- RFC 9728 protected-resource metadata discovery.
+- unauthenticated `401` bearer challenge.
+- authenticated request passage through the bearer gate.
+- host allowlist enforcement through the MCP SDK transport layer.
+
+This complements the existing in-process MCP tool/resource tests.
+
+### Version
+
+Phase 13 continues the project-wide **1.3.0** version policy.
+
 ## Phase 12: Production Security & Deployment Hardening
 
-Phase 12 hardens Streamable HTTP for controlled deployment while preserving the local-first stdio workflow. The MCP Python SDK documents Streamable HTTP as an ordinary web service that should use bearer authentication/OAuth 2.1 when exposed remotely, and its transport layer provides DNS-rebinding and host/origin controls. citeturn0search0turn0search4
+Phase 12 hardens Streamable HTTP for controlled deployment while preserving the local-first stdio workflow. The MCP Python SDK documents Streamable HTTP as an ordinary web service that should use bearer authentication/OAuth 2.1 when exposed remotely, and its transport layer provides DNS-rebinding and host/origin controls.
 
 ### Authentication
 
@@ -17,7 +55,7 @@ export OCULAR_AUDIO_MCP_RESOURCE_URL='https://mcp.example.com/mcp'
 export OCULAR_AUDIO_MCP_REQUIRED_SCOPES='mcp:read,mcp:analyze'
 ```
 
-The verifier is intentionally a minimal static-token resource-server implementation. For a larger deployment, replace it with JWT verification or RFC 7662 introspection backed by the organization's identity provider. The SDK's resource-server model verifies bearer tokens; it does not act as the login/authorization server. citeturn0search0turn0search5
+The verifier is intentionally a minimal static-token resource-server implementation. For a larger deployment, replace it with JWT verification or RFC 7662 introspection backed by the organization's identity provider. The SDK's resource-server model verifies bearer tokens; it does not act as the login/authorization server.
 
 ### Host and Origin Security
 
@@ -28,7 +66,7 @@ export OCULAR_AUDIO_MCP_ALLOWED_HOSTS='mcp.example.com,mcp.example.com:*'
 export OCULAR_AUDIO_MCP_ALLOWED_ORIGINS='https://app.example.com'
 ```
 
-Local HTTP remains localhost-bound by default. MCP explicitly recommends localhost binding for local servers and Origin validation to prevent DNS-rebinding attacks. citeturn0search8turn0search4
+Local HTTP remains localhost-bound by default. MCP explicitly recommends localhost binding for local servers and Origin validation to prevent DNS-rebinding attacks.
 
 ### Non-secret security resource
 
@@ -49,7 +87,7 @@ The bearer token itself is never returned.
 
 ### Request protection
 
-The server uses the MCP SDK's Streamable HTTP request-size protection and transport security instead of implementing a competing HTTP stack. The SDK currently exposes a bounded request-body setting and host/origin protections in `streamable_http_app()`. citeturn3search0
+The server uses the MCP SDK's Streamable HTTP request-size protection and transport security instead of implementing a competing HTTP stack. The SDK currently exposes a bounded request-body setting and host/origin protections in `streamable_http_app()`.
 
 ### Version
 
@@ -68,7 +106,7 @@ The server now exposes four user-selectable prompts:
 - `review_visual_evidence` — visual/OCR-focused review.
 - `compare_videos` — cross-video comparison.
 
-Prompts are deterministic templates. They do not call an LLM themselves; the MCP host decides how to use the returned messages. MCP v2 supports server prompts as a first-class primitive. citeturn0search3
+Prompts are deterministic templates. They do not call an LLM themselves; the MCP host decides how to use the returned messages. MCP v2 supports server prompts as a first-class primitive.
 
 ### Streamable HTTP
 
@@ -82,9 +120,9 @@ The MCP endpoint is:
 
 `http://127.0.0.1:8000/mcp`
 
-Streamable HTTP is the current HTTP transport; SSE is retained only for compatibility and is not used by this implementation. citeturn1search0turn1search3
+Streamable HTTP is the current HTTP transport; SSE is retained only for compatibility and is not used by this implementation.
 
-For programmatic clients, MCP v2 clients can connect directly to the endpoint URL. citeturn1search8
+For programmatic clients, MCP v2 clients can connect directly to the endpoint URL.
 
 ### Transport contract
 
@@ -94,7 +132,7 @@ The machine-readable Phase 10 contract now explicitly reports:
 - `streamable-http`
 - `sse` as superseded, not an active Phase 11 transport
 
-HTTP binds to localhost by default. This intentionally avoids exposing the local media-analysis server to a network until the operator explicitly chooses a host. MCP's v2 HTTP stack also provides DNS-rebinding protection. citeturn1search5
+HTTP binds to localhost by default. This intentionally avoids exposing the local media-analysis server to a network until the operator explicitly chooses a host. MCP's v2 HTTP stack also provides DNS-rebinding protection.
 
 ### Validation
 
@@ -134,11 +172,11 @@ The server exposes:
 | `ocularaudio://health` | Current health and cache checks |
 | `ocularaudio://contract` | Full machine-readable protocol contract |
 
-Resources are application-readable context; tools remain model-invoked actions. citeturn1search0turn5search1
+Resources are application-readable context; tools remain model-invoked actions.
 
 ### Tool behavior annotations
 
-All 31 tools receive stable MCP behavioral hints for read-only, destructive, idempotent, and open-world behavior. These annotations help capable MCP hosts present safer tool affordances; they are hints rather than an authorization boundary. citeturn1search2turn0search2
+All 31 tools receive stable MCP behavioral hints for read-only, destructive, idempotent, and open-world behavior. These annotations help capable MCP hosts present safer tool affordances; they are hints rather than an authorization boundary.
 
 ### Validation
 
