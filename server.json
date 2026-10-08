@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.RayAKaan/ocular-audio-mcp",
-  "description": "Lightweight local MCP for universal media evidence across social platforms, web URLs, streams, and local media.",
+  "description": "Local-first media intelligence MCP server for transcripts, visual evidence, OCR, retrieval, multimodal analysis, batch intelligence, and agentic workflows.",
   "repository": {
     "url": "https://github.com/RayAKaan/OcularAudio-MCP",
     "source": "github"
   },
-"version": "1.3.0",
+  "version": "1.3.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "ocular-audio-mcp",
-"version": "1.3.0",
+      "version": "1.3.0",
       "transport": {
         "type": "stdio"
       }
