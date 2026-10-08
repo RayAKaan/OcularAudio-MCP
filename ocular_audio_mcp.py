@@ -854,38 +854,37 @@ def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies
     is_youtube = bool(extract_video_id(url))
     stream_url = source.get("source") if is_local_file else None
 
-    try:
-        if not is_local_file:
+    if not is_local_file:
+        try:
             ydl_opts = {
-                'format': '18' if is_youtube else 'best',
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 30,
+                "format": "18" if is_youtube else "best",
+                "quiet": True,
+                "no_warnings": True,
+                "socket_timeout": 30,
+                "noplaylist": True,
             }
             if cookies_path:
-                ydl_opts['cookiefile'] = cookies_path
+                ydl_opts["cookiefile"] = cookies_path
 
             log.info("Extracting streaming source URL...")
             log.info("PROGRESS: Connecting to video source...")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
-                stream_url = info.get('url')
-
+                stream_url = info.get("url")
                 if not stream_url:
-                    formats = info.get('formats', [])
-                    for fmt in formats:
-                        if fmt.get('url') and (fmt.get('vcodec') != 'none' or not is_youtube):
-                            stream_url = fmt['url']
+                    for fmt in info.get("formats", []):
+                        if fmt.get("url") and fmt.get("vcodec") != "none":
+                            stream_url = fmt["url"]
                             break
-    except Exception as e:
-            log.warning("yt-dlp stream extraction failed: %s. Falling back to direct URL streaming.", e)
+        except Exception as exc:
+            log.warning("yt-dlp stream extraction failed: %s. Falling back to direct URL streaming.", exc)
             stream_url = url
 
-            if not stream_url:
+    if not stream_url:
         stream_url = url
 
     log.info("PROGRESS: Opening video stream with OpenCV...")
-    log.info("Connecting OpenCV to stream URL: %s...", stream_url[:60])
+    log.info("Connecting OpenCV to stream URL: %s...", str(stream_url)[:60])
     cap = cv2.VideoCapture(stream_url)
 
     try:
@@ -909,17 +908,14 @@ def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies
 
         temp_dir = tempfile.gettempdir()
         cache_id = _cache_id(url)
-
         success_count = 0
         payload = []
 
         for idx, sec in enumerate(sorted(timestamps_secs), 1):
             target_frame_idx = int(sec * fps)
             log.info("PROGRESS: Capturing frame %d/%d at %ss...", idx, len(timestamps_secs), sec)
-            log.info("Seeking to %ss (Frame %d out of %d)...", sec, target_frame_idx, total_frames)
 
             if target_frame_idx >= total_frames:
-                log.warning("Seek skipped: requested time %ss is out of video bounds.", sec)
                 payload.append(f"[WARNING: Requested timestamp {sec}s is beyond the end of the video.]")
                 continue
 
@@ -930,7 +926,6 @@ def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies
                 resized_frame = cv2.resize(frame, (640, 360))
                 temp_img_path = os.path.join(temp_dir, f"mcp_seek_{cache_id}_{sec}s.jpg")
                 cv2.imwrite(temp_img_path, resized_frame)
-
                 payload.append(Image(path=temp_img_path))
 
                 if enable_ocr:
@@ -939,20 +934,14 @@ def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies
                         payload.append(f"[OCR at {sec}s]:\n{ocr_text}")
 
                 success_count += 1
-                log.info("Frame at %ss captured successfully.", sec)
             else:
-                log.warning("Seek failed: OpenCV returned None for frame at %ss.", sec)
                 payload.append(f"[WARNING: Failed to seek or read frame at {sec} seconds.]")
 
-        # Build header after capture loop with actual count
-        header = [
+        return [
             f"[SUCCESS: Screenshot Extraction Completed]\n"
             f"Successfully captured {success_count} of {len(timestamps_secs)} requested frames.\n"
             f"The image content blocks are attached below in chronological order."
-        ]
-
-        return header + payload
-
+        ] + payload
     finally:
         cap.release()
 
