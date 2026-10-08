@@ -577,9 +577,9 @@ Lists recent persisted batches and their source/success/error/moment counts.
 ### CLI
 
 ```bash
-npx ocular-audio --batch batch.json "placeholder"
-npx ocular-audio --batch-search "pricing" batch.json "placeholder"
-npx ocular-audio --batch-compare batch.json "placeholder"
+npx ocular-audio --batch batch.json
+npx ocular-audio --batch-search "pricing" batch.json
+npx ocular-audio --batch-compare batch.json
 ```
 
 For batch CLI commands, the positional source is only used to enter the existing CLI execution path; the manifest file is the authoritative set of media sources.
