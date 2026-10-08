@@ -524,31 +524,6 @@ npx ocular-audio --frame-burst 120 10 5 "URL"
 
 
  
-## Phase 4: Semantic & Hybrid Retrieval
-
-Phase 4 adds a local-first semantic retrieval layer over timestamped transcript and visual OCR evidence. It combines TF-IDF cosine similarity with lexical matching and exposes both component scores and the final fused score.
-
-### `search_ocular_audio_hybrid`
-
-Searches one media source across transcript evidence and indexed visual OCR. Use `semantic_weight` from 0 to 1 to control the semantic/lexical balance.
-
-### `search_ocular_audio_hybrid_cache`
-
-Searches all locally cached evidence across media sources using the same hybrid ranking.
-
-### Retrieval contract
-
-Every result includes:
-- final hybrid score
-- semantic score
-- lexical score
-- source type
-- timestamp range
-- source metadata
-
-This phase intentionally has no external embedding API or vector database dependency. The retrieval contract is designed so a neural embedding backend can replace the TF-IDF scorer later without changing the MCP result surface.
-
- 
 ## Phase 6: Batch & Multi-Video Intelligence
 
 Phase 6 extends the multimodal evidence contract from one source to a bounded collection of sources. It reuses the existing transcript, visual, OCR, and multimodal layers rather than creating a second retrieval stack.
@@ -611,6 +586,31 @@ For batch CLI commands, the positional source is only used to enter the existing
 
 Phase 6 intentionally remains deterministic and local-first. It does not claim cross-video model reasoning or external vector-database infrastructure. It provides the orchestration and evidence aggregation contract required for the next agentic/production-hardening stage.
 
+## Phase 4: Semantic & Hybrid Retrieval
+
+Phase 4 adds a local-first semantic retrieval layer over timestamped transcript and visual OCR evidence. It combines TF-IDF cosine similarity with lexical matching and exposes both component scores and the final fused score.
+
+### `search_ocular_audio_hybrid`
+
+Searches one media source across transcript evidence and indexed visual OCR. Use `semantic_weight` from 0 to 1 to control the semantic/lexical balance.
+
+### `search_ocular_audio_hybrid_cache`
+
+Searches all locally cached evidence across media sources using the same hybrid ranking.
+
+### Retrieval contract
+
+Every result includes:
+- final hybrid score
+- semantic score
+- lexical score
+- source type
+- timestamp range
+- source metadata
+
+This phase intentionally has no external embedding API or vector database dependency. The retrieval contract is designed so a neural embedding backend can replace the TF-IDF scorer later without changing the MCP result surface.
+
+ 
 ## Phase 5: Multimodal Understanding
 
 Phase 5 aligns timestamped transcript evidence with persistent visual frames and optional OCR into unified multimodal moments. The layer is deterministic and inspectable: it reports which modalities are present, the nearby transcript evidence, OCR text, and measurable visual change.
