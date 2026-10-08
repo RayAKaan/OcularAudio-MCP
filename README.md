@@ -547,3 +547,35 @@ Every result includes:
 - source metadata
 
 This phase intentionally has no external embedding API or vector database dependency. The retrieval contract is designed so a neural embedding backend can replace the TF-IDF scorer later without changing the MCP result surface.
+
+ 
+## Phase 5: Multimodal Understanding
+
+Phase 5 aligns timestamped transcript evidence with persistent visual frames and optional OCR into unified multimodal moments. The layer is deterministic and inspectable: it reports which modalities are present, the nearby transcript evidence, OCR text, and measurable visual change.
+
+### `analyze_ocular_audio_multimodal`
+
+Builds or refreshes the visual index when necessary, aligns it to transcript evidence, detects frame-to-frame visual change using perceptual hashes, and ranks moments for an optional query.
+
+### `inspect_ocular_audio_multimodal_moment`
+
+Inspects the closest aligned multimodal moment to an exact timestamp and returns the structured evidence plus the associated frame.
+
+### Multimodal contract
+
+A moment can contain:
+- transcript evidence around the timestamp
+- a timestamped visual frame
+- OCR text when enabled and available
+- visual-change score
+- evidence score
+- explicit modality availability
+
+Phase 5 intentionally does not claim model-generated visual reasoning. It creates the evidence-alignment layer required for a later model-backed reasoning engine without coupling the MCP server to a proprietary vision API.
+
+### CLI
+
+```bash
+npx ocular-audio --multimodal "URL"
+npx ocular-audio --multimodal-search "pricing chart" "URL"
+```
