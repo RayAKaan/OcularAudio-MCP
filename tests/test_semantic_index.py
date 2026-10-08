@@ -1,5 +1,5 @@
 import unittest
-from semantic_index import SemanticDocument, TfidfIndex, hybrid_search, lexical_scores, tokenize
+from semantic_index import SemanticDocument, TfidfIndex, fuse_evidence, hybrid_search, lexical_scores, tokenize
 
 
 class SemanticIndexTests(unittest.TestCase):
@@ -28,6 +28,13 @@ class SemanticIndexTests(unittest.TestCase):
         self.assertGreaterEqual(results[0].semantic_score, 0)
         self.assertGreaterEqual(results[0].lexical_score, 0)
         self.assertGreater(results[0].score, results[1].score)
+
+    def test_fuse_transcript_and_visual_sources(self):
+        transcript = [SemanticDocument("t1", "revenue growth improved", source="transcript", start_seconds=10)]
+        visual = [SemanticDocument("v1", "revenue chart", source="visual_ocr", start_seconds=12)]
+        results = fuse_evidence(transcript, visual, "revenue growth", top_k=5)
+        self.assertEqual(len(results), 2)
+        self.assertEqual({item.source for item in results}, {"transcript", "visual_ocr"})
 
     def test_empty_query(self):
         self.assertEqual(hybrid_search(self.documents, ""), [])
