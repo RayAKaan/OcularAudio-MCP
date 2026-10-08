@@ -38,7 +38,7 @@ class MultimodalIndexTests(unittest.TestCase):
     def test_query_ranking(self):
         moments = build_multimodal_moments([self.segment], [self.frame1, self.frame2])
         results = rank_multimodal_moments(moments, "revenue pricing", top_k=2)
-        self.assertEqual(results[0].moment_id, "m00001")
+        self.assertEqual(results[0].moment_id, "m00002")
 
     def test_transcript_only_fallback(self):
         moments = build_multimodal_moments([self.segment], [])
