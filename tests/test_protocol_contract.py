@@ -52,7 +52,7 @@ class ProtocolContractTests(unittest.TestCase):
         self.assertEqual("1.3.0", payload["server"]["version"])
         self.assertEqual("stdio", payload["server"]["transport"])
         self.assertTrue(payload["backward_compatible"]["structured_content"])
-        self.assertEqual(["inspect_video"], payload["prompts"])
+        self.assertEqual(["inspect_video"], [item["name"] for item in payload["prompts"]])
         self.assertEqual(["stdio", "streamable-http"], payload["transports"])
         self.assertEqual(["sse"], payload["superseded_transports"])
 
