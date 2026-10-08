@@ -647,11 +647,6 @@ def _blocking_whisper_transcription(url_or_id: str, cookies_path: str) -> str:
             ydl.download([download_target])
 
         audio_file_path = os.path.join(temp_dir, f"yt_audio_{sanitized_id}.mp3")
-    log.info("Starting audio track extraction for %s via yt-dlp...", download_target)
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([download_target])
-
-    audio_file_path = os.path.join(temp_dir, f"yt_audio_{sanitized_id}.mp3")
 
     if not os.path.exists(audio_file_path):
         raise FileNotFoundError(
