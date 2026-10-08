@@ -50,6 +50,8 @@ class MCPV2SurfaceTests(unittest.TestCase):
                         "ocularaudio://health",
                         "ocularaudio://contract",
                         "ocularaudio://security",
+                        "ocularaudio://readiness",
+                        "ocularaudio://metrics",
                     },
                     resource_uris,
                 )
