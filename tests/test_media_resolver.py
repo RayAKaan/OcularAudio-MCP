@@ -31,6 +31,7 @@ class MediaResolverTests(unittest.TestCase):
         self.assertEqual(detect_platform("https://www.tiktok.com/@x/video/1"), "tiktok")
         self.assertEqual(detect_platform("https://example.com/video.mp4"), "generic_web")
         self.assertEqual(detect_platform("https://example.com/video", "Vimeo"), "vimeo")
+        self.assertEqual(detect_platform("https://www.snapchat.com/spotlight/1"), "snapchat")
 
     def test_local_source_classification(self):
         with tempfile.TemporaryDirectory() as tmp:
