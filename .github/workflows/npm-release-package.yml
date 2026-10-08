@@ -1,0 +1,26 @@
+name: OcularAudio NPM Release Package
+
+on:
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate release metadata
+        run: npm run check
+      - name: Build package tarball
+        run: mkdir -p release && npm pack --pack-destination release
+      - name: Upload NPM tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocular-audio-mcp-1.3.0
+          path: release/ocular-audio-mcp-1.3.0.tgz
+          if-no-files-found: error
