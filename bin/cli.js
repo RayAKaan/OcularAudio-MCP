@@ -132,6 +132,10 @@ OPTIONS
   --multimodal-search <q>
                           Search unified transcript + visual + OCR moments
   --multimodal           Analyze unified multimodal evidence
+  --batch <file>         Analyze a JSON batch manifest of media sources
+  --batch-search <q> <file>
+                          Search multimodal evidence across a batch
+  --batch-compare <file> Compare batch sources with a unified scorecard
   --ocr                   Extract text from screenshots using Tesseract OCR
                             Requires: brew install tesseract (macOS) / choco install tesseract (Windows) / apt install tesseract-ocr (Linux)
                             Also requires: pip install pytesseract
@@ -189,6 +193,9 @@ let hybridSearchQuery = null;
 let semanticWeight = null;
 let multimodalSearchQuery = null;
 let multimodalMode = false;
+let batchManifestFile = null;
+let batchSearchQuery = null;
+let batchCompareMode = false;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -247,6 +254,20 @@ for (let i = 0; i < args.length; i++) {
   }
   if (arg === '--multimodal') {
     multimodalMode = true;
+    continue;
+  }
+  if (arg === '--batch' && i + 1 < args.length) {
+    batchManifestFile = args[++i];
+    continue;
+  }
+  if (arg === '--batch-search' && i + 2 < args.length) {
+    batchSearchQuery = args[++i];
+    batchManifestFile = args[++i];
+    continue;
+  }
+  if (arg === '--batch-compare' && i + 1 < args.length) {
+    batchCompareMode = true;
+    batchManifestFile = args[++i];
     continue;
   }
   if (arg === '--check') {
@@ -433,6 +454,9 @@ if (hybridSearchQuery !== null) pyArgs.push('--hybrid-search', hybridSearchQuery
 if (semanticWeight !== null) pyArgs.push('--semantic-weight', semanticWeight);
 if (multimodalSearchQuery !== null) pyArgs.push('--multimodal-search', multimodalSearchQuery);
 if (multimodalMode) pyArgs.push('--multimodal');
+if (batchManifestFile) pyArgs.push('--batch', batchManifestFile);
+if (batchSearchQuery !== null) pyArgs.push('--batch-search', batchSearchQuery);
+if (batchCompareMode) pyArgs.push('--batch-compare');
 if (forceMode) pyArgs.push('--force');
 if (verboseMode) pyArgs.push('--verbose');
 if (quietMode) pyArgs.push('--quiet');
