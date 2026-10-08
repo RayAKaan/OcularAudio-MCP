@@ -154,8 +154,8 @@ OPTIONS
   --verbose               Show detailed progress information
   --quiet                 Suppress summary and status messages
 
-  System:
-  --check                 Check system dependencies (Python, FFmpeg, Whisper, Tesseract)
+  Universal sources:
+    Supports known social/video/audio platforms, generic web URLs, direct media URLs, streaming URLs, and local media files.\n\n  System:\n  --check                 Check system dependencies (Python, FFmpeg, Whisper, Tesseract)
 
 EXAMPLES
   npx ocular-audio "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
@@ -458,9 +458,9 @@ if (!targetUrl) {
 }
 
 const localSource = fs.existsSync(targetUrl) && fs.statSync(targetUrl).isFile();
-if (!localSource && !/^https?:\/\/|^rtmp(?:s|e|t|ts)?:\/\//i.test(targetUrl)) {
+if (!localSource && !/^(?:https?|rtmp(?:s|e|t|ts)?|rtsp|srt|udp):\/\//i.test(targetUrl)) {
   console.error(chalk.red('[ERROR] Invalid media source.'));
-  console.error(chalk.gray('Provide an http(s)/rtmp URL or an existing local media file.'));
+  console.error(chalk.gray('Provide an http(s), media-stream, or an existing local media file.'));
   process.exit(1);
 }
 
