@@ -2516,7 +2516,7 @@ def copy_to_clipboard_native(text: str) -> bool:
 
 
 @mcp.tool(annotations=tool_annotations("get_ocular_audio_contract"))
-async def get_ocular_audio_contract() -> dict:
+async def get_ocular_audio_contract() -> dict[str, object]:
     """Return the machine-readable MCP contract and current capability surface."""
     return server_contract(__version__, _check_system_capabilities())
 
