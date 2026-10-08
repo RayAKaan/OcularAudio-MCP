@@ -2583,6 +2583,38 @@ async def ocular_audio_contract_resource() -> str:
 
 
 if __name__ == "__main__":
+    # Phase 11 transport launcher. stdio remains the default local MCP transport;
+    # Streamable HTTP is the production HTTP transport for MCP v2.
+    if "--transport" in sys.argv:
+        idx = sys.argv.index("--transport")
+        transport = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else "stdio"
+        if transport not in {"stdio", "streamable-http"}:
+            sys.exit("Error: transport must be stdio or streamable-http")
+        if transport == "streamable-http":
+            host = "127.0.0.1"
+            port = 8000
+            if "--host" in sys.argv:
+                host_idx = sys.argv.index("--host")
+                host = sys.argv[host_idx + 1] if host_idx + 1 < len(sys.argv) else host
+            if "--port" in sys.argv:
+                port_idx = sys.argv.index("--port")
+                try:
+                    port = int(sys.argv[port_idx + 1])
+                except (IndexError, ValueError):
+                    sys.exit("Error: --port must be an integer")
+            if not 1 <= port <= 65535:
+                sys.exit("Error: --port must be between 1 and 65535")
+            mcp.run(
+                transport="streamable-http",
+                host=host,
+                port=port,
+                json_response=True,
+                stateless_http=False,
+            )
+        else:
+            mcp.run(transport="stdio")
+        sys.exit(0)
+
     # Handle --check mode (no URL required)
     if "--check" in sys.argv:
         caps = _check_system_capabilities()
