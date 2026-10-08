@@ -1,7 +1,7 @@
 {
   "name": "ocular-audio-mcp",
   "version": "1.3.0",
-  "description": "OcularAudio MCP: Universal Media Intelligence & Video Evidence Server",
+  "description": "Universal local-first media intelligence MCP server for transcripts, visual evidence, OCR, retrieval, multimodal analysis, batch intelligence, and agentic workflows.",
   "mcpName": "io.github.RayAKaan/ocular-audio-mcp",
   "main": "./bin/cli.js",
   "bin": {
@@ -10,9 +10,9 @@
   "files": [
     "LICENSE",
     "README.md",
+    "requirements.txt",
     "agentic_index.py",
     "batch_index.py",
-    "bin/",
     "capability_modes.py",
     "deployment_security.py",
     "evidence_index.py",
@@ -21,27 +21,38 @@
     "ocular_audio_mcp.py",
     "prompts.py",
     "protocol_contract.py",
-    "requirements.txt",
     "runtime_ops.py",
     "semantic_index.py",
     "universal_sources.py",
-    "visual_index.py"
+    "visual_index.py",
+    "bin/",
+    "docker/",
+    "scripts/"
   ],
   "keywords": [
-    "youtube",
     "mcp",
+    "media-intelligence",
+    "video-analysis",
+    "audio-analysis",
+    "video-understanding",
+    "multimodal",
+    "ocr",
     "whisper",
-    "transcribe",
-    "video-processing",
     "computer-vision",
-    "cli",
-    "youtube-transcript",
-    "video-screenshots",
-    "faster-whisper"
+    "evidence-retrieval",
+    "agentic",
+    "batch-analysis",
+    "youtube",
+    "local-first",
+    "model-context-protocol"
   ],
   "repository": {
     "type": "git",
     "url": "https://github.com/RayAKaan/OcularAudio-MCP.git"
+  },
+  "homepage": "https://github.com/RayAKaan/OcularAudio-MCP#readme",
+  "bugs": {
+    "url": "https://github.com/RayAKaan/OcularAudio-MCP/issues"
   },
   "author": "RayAKaan",
   "license": "MIT",
@@ -51,5 +62,12 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "scripts": {
+    "check": "node scripts/verify-release.js",
+    "pack:release": "npm pack"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
