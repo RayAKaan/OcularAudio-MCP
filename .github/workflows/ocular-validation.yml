@@ -24,4 +24,4 @@ jobs:
       - name: Validate CLI syntax
         run: node --check bin/cli.js
       - name: Validate package metadata
-        run: node -e "const p=require('./package.json'); if(!/^1\.\d+\.\d+$/.test(p.version)) process.exit(1); console.log(p.name+' '+p.version)"
+        run: node -e "const fs=require('fs'); const p=require('./package.json'); const s=JSON.parse(fs.readFileSync('server.json','utf8')); if(!/^1\.\d+\.\d+$/.test(p.version)) process.exit(1); if(s.version!==p.version || s.packages[0].version!==p.version) process.exit(1); console.log(p.name+' '+p.version)"
