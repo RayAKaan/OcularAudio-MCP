@@ -1,0 +1,27 @@
+name: OcularAudio Validation
+
+on:
+  push:
+    branches: ["main", "feat/**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Compile Python
+        run: python -m py_compile ocular_audio_mcp.py media_resolver.py evidence_index.py
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Validate CLI syntax
+        run: node --check bin/cli.js
+      - name: Validate package metadata
+        run: node -e "const p=require('./package.json'); if(!/^1\.\d+\.\d+$/.test(p.version)) process.exit(1); console.log(p.name+' '+p.version)"
