@@ -18,7 +18,7 @@ class PromptTests(unittest.TestCase):
 
     def test_prompts_are_grounded_templates(self):
         self.assertIn("timestamp", render_inspect_video("https://example.com/v"))
-        self.assertIn("query", render_search_video_evidence("https://example.com/v", "refund"))
+        self.assertIn("Question: refund", render_search_video_evidence("https://example.com/v", "refund"))
         self.assertIn("OCR", render_visual_review("https://example.com/v"))
         self.assertIn("Compare", render_compare_videos("a.json,b.json", "what changed?"))
 
