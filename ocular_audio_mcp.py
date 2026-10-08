@@ -22,6 +22,15 @@ from youtube_transcript_api import YouTubeTranscriptApi
 import yt_dlp
 import cv2
 
+from media_resolver import (
+    normalize_analysis_level,
+    resolve_media_source,
+    stable_source_id,
+    classify_source,
+)
+
+__version__ = "1.3.0"
+
 # Configure logging to stderr so it does NOT corrupt the MCP stdio protocol
 logging.basicConfig(
     level=logging.INFO,
@@ -55,6 +64,9 @@ def _check_system_capabilities() -> dict:
     """Check availability of system dependencies and return capabilities."""
     capabilities = {
         "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        "ocular_audio_version": __version__,
+        "supported_analysis_levels": ["glance", "understand", "deep", "omniscient"],
+        "supported_source_types": ["web_url", "local_file", "direct_media_url", "live_url"],
         "ffmpeg": False,
         "whisper": {"available": False, "engine": None, "model_size": None},
         "tesseract": {"available": False, "path": None},
@@ -273,11 +285,8 @@ def extract_video_id(url: str) -> str:
 
 
 def _cache_id(url: str) -> str:
-    """Generate a deterministic cache ID from a URL."""
-    video_id = extract_video_id(url)
-    if video_id:
-        return video_id
-    return "".join([c if c.isalnum() else "_" for c in url[-20:]])
+    """Generate a collision-resistant cache ID for any supported media source."""
+    return stable_source_id(url)
 
 
 def _default_metadata(cache_id: str) -> dict:
@@ -293,6 +302,22 @@ def _default_metadata(cache_id: str) -> dict:
 
 
 def _blocking_metadata_fetch(url: str, cookies_path: str) -> dict:
+    source = resolve_media_source(url, cookies_path)
+    if source.get("source_kind") == "local_file":
+        duration = source.get("duration_seconds")
+        duration_str = "Unknown"
+        if duration:
+            total = int(duration)
+            duration_str = f"{total // 3600}h {((total % 3600) // 60)}m {total % 60}s" if total >= 3600 else f"{total // 60}m {total % 60}s"
+        return {
+            "title": source.get("title") or Path(source["source"]).stem,
+            "uploader": "",
+            "views": 0,
+            "duration": duration_str,
+            "upload_date": "N/A",
+            "chapters": [],
+            "source": source,
+        }
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -323,13 +348,32 @@ def _blocking_metadata_fetch(url: str, cookies_path: str) -> dict:
         else:
             duration_str = "Unknown"
 
+        has_audio = any(f.get("acodec") not in (None, "none") for f in info.get("formats", []))
+        has_video = any(f.get("vcodec") not in (None, "none") for f in info.get("formats", []))
+        has_captions = bool(info.get("subtitles") or info.get("automatic_captions"))
         return {
             "title": info.get("title") or "Unknown Title",
             "uploader": info.get("uploader") or "Unknown Creator",
             "views": info.get("view_count") or 0,
             "duration": duration_str,
             "upload_date": info.get("upload_date") or "N/A",
-            "chapters": formatted_chapters
+            "chapters": formatted_chapters,
+            "source": {
+                "source_id": stable_source_id(url),
+                "source_kind": "url",
+                "platform": source.get("platform", "generic_web"),
+                "extractor": info.get("extractor_key") or info.get("extractor"),
+                "media_type": "video" if has_video else "audio" if has_audio else "unknown",
+                "is_live": bool(info.get("is_live")),
+                "has_audio": has_audio,
+                "has_video": has_video,
+                "has_captions": has_captions,
+                "capabilities": {
+                    "metadata": True, "audio": has_audio, "video": has_video,
+                    "captions": has_captions, "screenshots": has_video,
+                    "live": bool(info.get("is_live")),
+                },
+            },
         }
 
 
@@ -576,9 +620,26 @@ def _blocking_whisper_transcription(url_or_id: str, cookies_path: str) -> str:
     if cookies_path:
         ydl_opts['cookiefile'] = cookies_path
 
-    download_target = url_or_id if url_or_id.startswith("http") else f"https://www.youtube.com/watch?v={url_or_id}"
+    local_source = Path(os.path.expanduser(url_or_id))
+    is_local_file = local_source.exists() and local_source.is_file()
 
-    log.info("PROGRESS: Downloading audio track for transcription...")
+    if is_local_file:
+        audio_file_path = os.path.join(temp_dir, f"ocular_audio_{sanitized_id}.mp3")
+        log.info("PROGRESS: Extracting audio from local media...")
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", str(local_source), "-vn", "-acodec", "libmp3lame", "-b:a", "128k", audio_file_path],
+            capture_output=True, text=True, timeout=NETWORK_TIMEOUT
+        )
+        if result.returncode != 0:
+            raise RuntimeError("Failed to extract audio from local media with FFmpeg.")
+    else:
+        download_target = url_or_id if url_or_id.startswith("http") else f"https://www.youtube.com/watch?v={url_or_id}"
+        log.info("PROGRESS: Downloading audio track for transcription...")
+        log.info("Starting audio track extraction for %s via yt-dlp...", download_target)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([download_target])
+
+        audio_file_path = os.path.join(temp_dir, f"yt_audio_{sanitized_id}.mp3")
     log.info("Starting audio track extraction for %s via yt-dlp...", download_target)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([download_target])
@@ -788,40 +849,39 @@ def extract_text_from_frame(image_path: str) -> str:
 
 
 def _blocking_screenshot_extractor(url: str, timestamps_secs: list[int], cookies_path: str, enable_ocr: bool = False) -> list:
+    source = classify_source(url)
+    is_local_file = source.get("source_kind") == "local_file"
     is_youtube = bool(extract_video_id(url))
-    stream_url = None
+    stream_url = source.get("source") if is_local_file else None
 
     try:
-        ydl_opts = {
-            'format': '18' if is_youtube else 'best',
-            'quiet': True,
-            'no_warnings': True,
-            'socket_timeout': 30,
-        }
-        if is_youtube:
-            ydl_opts['format'] = '18'
-        elif 'vimeo.com' in url:
-            ydl_opts['format'] = 'best'
-        if cookies_path:
-            ydl_opts['cookiefile'] = cookies_path
+        if not is_local_file:
+            ydl_opts = {
+                'format': '18' if is_youtube else 'best',
+                'quiet': True,
+                'no_warnings': True,
+                'socket_timeout': 30,
+            }
+            if cookies_path:
+                ydl_opts['cookiefile'] = cookies_path
 
-        log.info("Extracting streaming source URL...")
-        log.info("PROGRESS: Connecting to video source...")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            stream_url = info.get('url')
+            log.info("Extracting streaming source URL...")
+            log.info("PROGRESS: Connecting to video source...")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                stream_url = info.get('url')
+
+                if not stream_url:
+                    formats = info.get('formats', [])
+                    for fmt in formats:
+                        if fmt.get('url') and (fmt.get('vcodec') != 'none' or not is_youtube):
+                            stream_url = fmt['url']
+                            break
+    except Exception as e:
+            log.warning("yt-dlp stream extraction failed: %s. Falling back to direct URL streaming.", e)
+            stream_url = url
 
             if not stream_url:
-                formats = info.get('formats', [])
-                for fmt in formats:
-                    if fmt.get('url') and (fmt.get('vcodec') != 'none' or not is_youtube):
-                        stream_url = fmt['url']
-                        break
-    except Exception as e:
-        log.warning("yt-dlp stream extraction failed: %s. Falling back to direct URL streaming.", e)
-        stream_url = url
-
-    if not stream_url:
         stream_url = url
 
     log.info("PROGRESS: Opening video stream with OpenCV...")
@@ -967,6 +1027,25 @@ def _build_transcript_text(cached_data: dict = None, transcript_text: str = None
 
 
 @mcp.tool()
+async def inspect_ocular_audio_source(source: str) -> str:
+    """Resolve a URL or local media file without downloading or analyzing it."""
+    cookies_path = find_cookies_file()
+    try:
+        resolved = await asyncio.wait_for(
+            asyncio.to_thread(resolve_media_source, source, cookies_path),
+            timeout=NETWORK_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        return "[ERROR] Media source resolution timed out."
+    except Exception as exc:
+        return f"[ERROR] Invalid media source: {exc}"
+
+    safe = dict(resolved)
+    safe.pop("source", None)
+    return json.dumps(safe, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
 async def get_ocular_audio_capabilities() -> str:
     """
     Returns system capabilities and dependency status.
@@ -979,7 +1058,10 @@ async def get_ocular_audio_capabilities() -> str:
 
     output = [
         "[SYSTEM CAPABILITIES]",
+        f"OcularAudio: {caps['ocular_audio_version']}",
         f"Python: {caps['python_version']}",
+        f"Analysis Levels: {', '.join(caps['supported_analysis_levels'])}",
+        f"Source Types: {', '.join(caps['supported_source_types'])}",
         f"FFmpeg: {'Available' if caps['ffmpeg'] else 'NOT FOUND - Required for video processing'}",
         f"OpenCV: {'Available' if caps['opencv'] else 'NOT FOUND - Required for screenshots'}",
         f"Whisper: {'Available (' + caps['whisper']['engine'] + ', model: ' + caps['whisper']['model_size'] + ')' if caps['whisper']['available'] else 'NOT FOUND - Optional for local transcription'}",
@@ -1149,7 +1231,8 @@ async def get_ocular_audio_video_context(
     url: str,
     detail_level: str = "auto",
     use_local_whisper: bool = True,
-    enable_ocr: bool = False
+    enable_ocr: bool = False,
+    analysis_depth: str = "understand"
 ) -> list:
     """
     Extracts transcript, metadata, and optional intelligent screenshots from a video.
@@ -1173,6 +1256,19 @@ async def get_ocular_audio_video_context(
     if detail_level not in valid_modes:
         log.warning("Invalid detail_level '%s', falling back to 'auto'.", detail_level)
         detail_level = "auto"
+
+    try:
+        normalized_depth = normalize_analysis_level(analysis_depth)
+    except ValueError as exc:
+        return [f"Error: {exc}"]
+
+    if normalized_depth == "glance":
+        detail_level = "overview"
+    elif normalized_depth == "deep":
+        detail_level = "deep"
+    elif normalized_depth == "omniscient":
+        detail_level = "deep"
+        enable_ocr = True
 
     video_id = extract_video_id(url)
     is_youtube = bool(video_id)
@@ -1328,7 +1424,7 @@ async def get_ocular_audio_video_context(
     success_count = sum(1 for item in screenshot_payload if hasattr(item, 'path'))
     result = [
         f"[VIDEO CONTEXT - TRANSCRIPT + VISUALS]",
-        f"Detail Level: {detail_level} ({success_count} screenshots captured)",
+        f"Detail Level: {detail_level} | Analysis Depth: {normalized_depth} ({success_count} screenshots captured)",
         header,
         "[VISUAL KEYPOINTS]",
         keypoints_section,
