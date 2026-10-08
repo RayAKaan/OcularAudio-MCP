@@ -1551,6 +1551,7 @@ async def inspect_ocular_audio_multimodal_moment(
 async def plan_ocular_audio_analysis(
     query: str = "",
     multi_video: bool = False,
+    mode: str = "auto",
     timeout_seconds: float = 120,
     max_retries: int = 2,
 ) -> str:
@@ -1595,6 +1596,7 @@ async def run_ocular_audio_analysis(
     url: str,
     query: str = "",
     multi_video: bool = False,
+    mode: str = "auto",
     timeout_seconds: float = 120,
     max_retries: int = 2,
 ) -> str:
