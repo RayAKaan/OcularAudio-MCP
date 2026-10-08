@@ -2446,6 +2446,18 @@ if __name__ == "__main__":
             idx = sys.argv.index("--multimodal-search")
             if idx + 1 < len(sys.argv):
                 multimodal_search_query = sys.argv[idx + 1]
+        batch_manifest_file = None
+        batch_search_query = None
+        batch_compare_mode = "--batch-compare" in sys.argv
+        if "--batch" in sys.argv:
+            idx = sys.argv.index("--batch")
+            if idx + 1 < len(sys.argv):
+                batch_manifest_file = sys.argv[idx + 1]
+        if "--batch-search" in sys.argv:
+            idx = sys.argv.index("--batch-search")
+            if idx + 2 < len(sys.argv):
+                batch_search_query = sys.argv[idx + 1]
+                batch_manifest_file = sys.argv[idx + 2]
         analysis_depth = "understand"
         if "--analysis-depth" in sys.argv:
             idx = sys.argv.index("--analysis-depth")
@@ -2515,6 +2527,29 @@ if __name__ == "__main__":
                     enable_ocr=True,
                     use_local_whisper=True,
                 ))
+                return
+
+            if batch_manifest_file:
+                try:
+                    manifest_text = Path(batch_manifest_file).read_text(encoding="utf-8")
+                except OSError as exc:
+                    print(json.dumps({"error": f"Unable to read batch manifest: {exc}"}))
+                    return
+                if batch_compare_mode:
+                    print(await compare_ocular_audio_videos(
+                        sources_json=manifest_text,
+                        query="",
+                        enable_ocr=enable_ocr,
+                        use_local_whisper=True,
+                    ))
+                else:
+                    print(await analyze_ocular_audio_batch(
+                        manifest_json=manifest_text,
+                        query=batch_search_query or "",
+                        enable_ocr=enable_ocr,
+                        use_local_whisper=True,
+                        force=force_mode,
+                    ))
                 return
 
             # ── JSON mode: call underlying functions for structured data ─────
