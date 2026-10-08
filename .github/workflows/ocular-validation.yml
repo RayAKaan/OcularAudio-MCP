@@ -29,5 +29,7 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Validate CLI syntax
         run: node --check bin/cli.js
-      - name: Validate package metadata
-        run: node -e "const fs=require('fs'); const p=require('./package.json'); const s=JSON.parse(fs.readFileSync('server.json','utf8')); if(!/^1\.\d+\.\d+$/.test(p.version)) process.exit(1); if(s.version!==p.version || s.packages[0].version!==p.version) process.exit(1); console.log(p.name+' '+p.version)"
+      - name: Validate release metadata
+        run: npm run check
+      - name: Validate package contents
+        run: npm pack --dry-run
