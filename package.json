@@ -1,6 +1,6 @@
 {
   "name": "ocular-audio-mcp",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "OcularAudio MCP: Universal Media Intelligence & Video Evidence Server",
   "mcpName": "io.github.RayAKaan/ocular-audio-mcp",
   "main": "./bin/cli.js",
@@ -13,6 +13,7 @@
     "media_resolver.py",
     "evidence_index.py",
     "visual_index.py",
+    "semantic_index.py",
     "requirements.txt",
     "README.md",
     "LICENSE"

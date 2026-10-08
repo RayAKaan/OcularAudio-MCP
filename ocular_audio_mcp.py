@@ -43,8 +43,13 @@ from visual_index import (
     search_visual_frames,
     select_burst_timestamps,
 )
+from semantic_index import (
+    SemanticDocument,
+    fuse_evidence,
+    hybrid_search,
+)
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 # Configure logging to stderr so it does NOT corrupt the MCP stdio protocol
 logging.basicConfig(
@@ -1326,6 +1331,121 @@ async def crop_ocular_audio_video_frame(
         return [f"Error: Crop extraction timed out after {NETWORK_TIMEOUT} seconds."]
     except Exception as exc:
         return [f"Error during crop extraction: {exc}"]
+
+
+def _semantic_documents_for_source(url: str) -> list[SemanticDocument]:
+    cache_id = _cache_id(url)
+    documents: list[SemanticDocument] = []
+
+    evidence_cache = _evidence_cache_path(cache_id)
+    if evidence_cache.exists():
+        try:
+            payload = json.loads(evidence_cache.read_text(encoding="utf-8"))
+            for item in payload.get("segments", []):
+                documents.append(SemanticDocument(
+                    document_id=str(item.get("evidence_id", "")),
+                    text=str(item.get("text", "")),
+                    source=str(item.get("source", "transcript")),
+                    start_seconds=float(item.get("start_seconds", 0)),
+                    end_seconds=float(item.get("end_seconds", 0)),
+                    chapter=str(item.get("chapter", "")),
+                    metadata={"source_id": cache_id},
+                ))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+    visual_cache = _read_visual_index(cache_id)
+    if visual_cache:
+        for item in visual_cache.get("frames", []):
+            ocr = str(item.get("ocr_text", "")).strip()
+            if ocr:
+                documents.append(SemanticDocument(
+                    document_id=str(item.get("frame_id", "")),
+                    text=ocr,
+                    source="visual_ocr",
+                    start_seconds=float(item.get("timestamp_seconds", 0)),
+                    end_seconds=float(item.get("timestamp_seconds", 0)),
+                    metadata={"source_id": cache_id, "image_path": item.get("image_path", "")},
+                ))
+    return documents
+
+
+@mcp.tool()
+async def search_ocular_audio_hybrid(
+    url: str,
+    query: str,
+    top_k: int = 8,
+    semantic_weight: float = 0.65,
+) -> str:
+    """Search transcript and visual OCR evidence with transparent hybrid ranking."""
+    try:
+        documents = await asyncio.to_thread(_semantic_documents_for_source, url)
+        results = await asyncio.to_thread(
+            hybrid_search,
+            documents,
+            query,
+            top_k,
+            semantic_weight,
+        )
+        return json.dumps({
+            "source_id": _cache_id(url),
+            "query": query.strip(),
+            "semantic_weight": max(0.0, min(1.0, float(semantic_weight))),
+            "result_count": len(results),
+            "results": [item.to_dict() for item in results],
+        }, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def search_ocular_audio_hybrid_cache(
+    query: str,
+    top_k: int = 10,
+    semantic_weight: float = 0.65,
+) -> str:
+    """Search all cached transcript and visual OCR evidence with hybrid ranking."""
+    documents: list[SemanticDocument] = []
+    for path in CACHE_DIR.glob("*.json"):
+        if path.name in {"config.json"}:
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        source_id = path.stem
+        segments = payload.get("evidence_segments", payload.get("segments", []))
+        for item in segments:
+            documents.append(SemanticDocument(
+                document_id=f"{source_id}:{item.get('evidence_id', item.get('id', ''))}",
+                text=str(item.get("text", "")),
+                source="transcript",
+                start_seconds=float(item.get("start_seconds", 0)),
+                end_seconds=float(item.get("end_seconds", 0)),
+                chapter=str(item.get("chapter", "")),
+                metadata={"source_id": source_id},
+            ))
+    for path in VISUAL_CACHE_DIR.glob("*.json"):
+        payload = _read_visual_index(path.stem)
+        if not payload:
+            continue
+        for item in payload.get("frames", []):
+            ocr = str(item.get("ocr_text", "")).strip()
+            if ocr:
+                documents.append(SemanticDocument(
+                    document_id=f"{path.stem}:{item.get('frame_id', '')}",
+                    text=ocr,
+                    source="visual_ocr",
+                    start_seconds=float(item.get("timestamp_seconds", 0)),
+                    end_seconds=float(item.get("timestamp_seconds", 0)),
+                    metadata={"source_id": path.stem, "image_path": item.get("image_path", "")},
+                ))
+    results = await asyncio.to_thread(hybrid_search, documents, query, top_k, semantic_weight)
+    return json.dumps({
+        "query": query.strip(),
+        "result_count": len(results),
+        "results": [item.to_dict() for item in results],
+    }, ensure_ascii=False, indent=2)
 
 
 def _parse_duration_str(duration_str: str) -> int:
