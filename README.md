@@ -1,4 +1,60 @@
 
+## Phase 12: Production Security & Deployment Hardening
+
+Phase 12 hardens Streamable HTTP for controlled deployment while preserving the local-first stdio workflow. The MCP Python SDK documents Streamable HTTP as an ordinary web service that should use bearer authentication/OAuth 2.1 when exposed remotely, and its transport layer provides DNS-rebinding and host/origin controls. citeturn0search0turn0search4
+
+### Authentication
+
+HTTP authentication is environment-driven and never requires secrets in source control or command-line arguments.
+
+Enable the built-in controlled-deployment verifier:
+
+```bash
+export OCULAR_AUDIO_MCP_REQUIRE_AUTH=true
+export OCULAR_AUDIO_MCP_AUTH_TOKEN='replace-with-a-secret'
+export OCULAR_AUDIO_MCP_ISSUER_URL='https://auth.example.com'
+export OCULAR_AUDIO_MCP_RESOURCE_URL='https://mcp.example.com/mcp'
+export OCULAR_AUDIO_MCP_REQUIRED_SCOPES='mcp:read,mcp:analyze'
+```
+
+The verifier is intentionally a minimal static-token resource-server implementation. For a larger deployment, replace it with JWT verification or RFC 7662 introspection backed by the organization's identity provider. The SDK's resource-server model verifies bearer tokens; it does not act as the login/authorization server. citeturn0search0turn0search5
+
+### Host and Origin Security
+
+For deployments behind a real hostname:
+
+```bash
+export OCULAR_AUDIO_MCP_ALLOWED_HOSTS='mcp.example.com,mcp.example.com:*'
+export OCULAR_AUDIO_MCP_ALLOWED_ORIGINS='https://app.example.com'
+```
+
+Local HTTP remains localhost-bound by default. MCP explicitly recommends localhost binding for local servers and Origin validation to prevent DNS-rebinding attacks. citeturn0search8turn0search4
+
+### Non-secret security resource
+
+`ocularaudio://security` exposes:
+
+- whether authentication is required
+- whether authentication is configured
+- issuer/resource URLs when configured
+- required scopes
+- host/origin allowlists
+- token TTL
+
+The bearer token itself is never returned.
+
+### Identity tool
+
+`get_ocular_audio_identity` reports the authenticated subject, client ID, scopes, and expiry without exposing the bearer credential. Over stdio/in-process it explicitly reports that no HTTP principal is present.
+
+### Request protection
+
+The server uses the MCP SDK's Streamable HTTP request-size protection and transport security instead of implementing a competing HTTP stack. The SDK currently exposes a bounded request-body setting and host/origin protections in `streamable_http_app()`. citeturn3search0
+
+### Version
+
+Phase 12 continues the project-wide **1.3.0** version policy.
+
 ## Phase 11: Host Interoperability & Deployment
 
 Phase 11 turns the protocol foundation into a host-ready interface while keeping OcularAudio **local-first** and version **1.3.0**.

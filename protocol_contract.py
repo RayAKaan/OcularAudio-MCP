@@ -45,6 +45,7 @@ TOOL_NAMES = (
     "inspect_ocular_audio_moment",
     "search_ocular_audio_cache",
     "get_ocular_audio_contract",
+    "get_ocular_audio_identity",
 )
 
 READ_ONLY_PREFIXES = (
@@ -178,6 +179,7 @@ def server_contract(version: str, capabilities: dict[str, Any], prompts: list[di
         "prompts": prompts or [],
         "capability_modes": capabilities.get("capability_modes", {}),
         "source_coverage": capabilities.get("source_coverage", {}),
+        "security": capabilities.get("security", {}),
         "backward_compatible": {
             "text_content": True,
             "structured_content": True,
