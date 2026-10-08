@@ -35,8 +35,16 @@ from evidence_index import (
     search_evidence,
     timeline_window,
 )
+from visual_index import (
+    frame_descriptor,
+    frames_from_payload,
+    normalize_crop_box,
+    sample_timestamps,
+    search_visual_frames,
+    select_burst_timestamps,
+)
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 # Configure logging to stderr so it does NOT corrupt the MCP stdio protocol
 logging.basicConfig(
@@ -49,6 +57,12 @@ log = logging.getLogger("ocular_audio_mcp")
 # Define cache and config directories
 CACHE_DIR = Path(os.path.expanduser("~")) / ".cache" / "ocular_audio_mcp"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+VISUAL_CACHE_DIR = CACHE_DIR / "visual"
+VISUAL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+VISUAL_FRAME_DIR = VISUAL_CACHE_DIR / "frames"
+VISUAL_FRAME_DIR.mkdir(parents=True, exist_ok=True)
+VISUAL_INDEX_VERSION = 1
+VISUAL_MAX_FRAMES = 240
 
 # Cache expiration: 7 days in seconds
 CACHE_MAX_AGE = 7 * 24 * 60 * 60
@@ -973,6 +987,339 @@ async def get_ocular_audio_video_screenshots(url: str, timestamps_secs: list[int
         return [f"Error: Screenshot extraction timed out after {NETWORK_TIMEOUT} seconds."]
     except Exception as e:
         return [f"Error during screenshot extraction: {str(e)}"]
+
+
+def _visual_index_path(cache_id: str) -> Path:
+    return VISUAL_CACHE_DIR / f"{cache_id}.json"
+
+
+def _visual_frame_dir(cache_id: str) -> Path:
+    path = VISUAL_FRAME_DIR / cache_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _read_visual_index(cache_id: str) -> dict | None:
+    path = _visual_index_path(cache_id)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _write_visual_index(cache_id: str, payload: dict) -> None:
+    path = _visual_index_path(cache_id)
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temp, path)
+
+
+def _blocking_visual_frame_capture(
+    url: str,
+    timestamps_secs: list[int],
+    cookies_path: str,
+    enable_ocr: bool = False,
+) -> list[dict]:
+    """Capture persistent, higher-fidelity frames for the Phase 3 visual index."""
+    source = classify_source(url)
+    is_local_file = source.get("source_kind") == "local_file"
+    stream_url = source.get("source") if is_local_file else None
+
+    if not is_local_file:
+        try:
+            ydl_opts = {
+                "format": "bestvideo[ext=mp4]/best[ext=mp4]/best",
+                "quiet": True,
+                "no_warnings": True,
+                "socket_timeout": 30,
+                "noplaylist": True,
+            }
+            if cookies_path:
+                ydl_opts["cookiefile"] = cookies_path
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                stream_url = info.get("url")
+                if not stream_url:
+                    for fmt in info.get("formats", []):
+                        if fmt.get("url") and fmt.get("vcodec") != "none":
+                            stream_url = fmt["url"]
+                            break
+        except Exception as exc:
+            log.warning("Visual stream resolution failed: %s", exc)
+            stream_url = url
+
+    cap = cv2.VideoCapture(stream_url or url)
+    if not cap.isOpened():
+        cap.release()
+        raise RuntimeError("Failed to open video stream for visual evidence.")
+
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if fps <= 0:
+            fps = 25.0
+
+        cache_id = _cache_id(url)
+        output_dir = _visual_frame_dir(cache_id)
+        results = []
+        for index, sec in enumerate(sorted(set(max(0, int(t)) for t in timestamps_secs)), 1):
+            target_frame = int(sec * fps)
+            if total_frames > 0 and target_frame >= total_frames:
+                continue
+            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            ok, frame = cap.read()
+            if not ok:
+                continue
+
+            height, width = frame.shape[:2]
+            max_dimension = 1280
+            if max(width, height) > max_dimension:
+                scale = max_dimension / max(width, height)
+                frame = cv2.resize(
+                    frame,
+                    (max(1, int(width * scale)), max(1, int(height * scale))),
+                    interpolation=cv2.INTER_AREA,
+                )
+
+            image_path = output_dir / f"{sec:08d}.jpg"
+            cv2.imwrite(str(image_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+            ocr_text = extract_text_from_frame(str(image_path)) if enable_ocr else ""
+            descriptor = frame_descriptor(
+                str(image_path),
+                sec,
+                f"f{sec:08d}",
+                ocr_text,
+            )
+            results.append(descriptor.to_dict())
+            log.info("PROGRESS: Indexed visual frame %d/%d at %ss...", index, len(timestamps_secs), sec)
+        return results
+    finally:
+        cap.release()
+
+
+@mcp.tool()
+async def index_ocular_audio_video_visuals(
+    url: str,
+    interval_seconds: float = 10,
+    enable_ocr: bool = True,
+    force: bool = False,
+) -> str:
+    """Build or refresh a persistent timestamped visual evidence index for a media source."""
+    try:
+        cache_id = _cache_id(url)
+        if not force:
+            existing = _read_visual_index(cache_id)
+            if existing and existing.get("version") == VISUAL_INDEX_VERSION:
+                return json.dumps(existing, ensure_ascii=False, indent=2)
+
+        resolved = await asyncio.wait_for(
+            asyncio.to_thread(resolve_media_source, url, find_cookies_file()),
+            timeout=NETWORK_TIMEOUT,
+        )
+        duration = float(resolved.get("duration_seconds") or 0)
+        if duration <= 0:
+            return json.dumps({
+                "error": "Unable to determine media duration; visual indexing requires a finite video.",
+                "source_id": cache_id,
+            }, ensure_ascii=False)
+
+        timestamps = sample_timestamps(
+            duration,
+            interval_seconds=interval_seconds,
+            max_frames=VISUAL_MAX_FRAMES,
+        )
+        frames = await asyncio.wait_for(
+            asyncio.to_thread(
+                _blocking_visual_frame_capture,
+                url,
+                timestamps,
+                find_cookies_file(),
+                enable_ocr,
+            ),
+            timeout=NETWORK_TIMEOUT,
+        )
+        payload = {
+            "version": VISUAL_INDEX_VERSION,
+            "source_id": cache_id,
+            "url": url,
+            "title": resolved.get("title", ""),
+            "duration_seconds": duration,
+            "interval_seconds": max(1.0, float(interval_seconds)),
+            "ocr_enabled": bool(enable_ocr),
+            "frame_count": len(frames),
+            "frames": frames,
+            "created_at": time.time(),
+        }
+        _write_visual_index(cache_id, payload)
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+    except asyncio.TimeoutError:
+        return json.dumps({"error": "Visual indexing timed out."}, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def search_ocular_audio_visuals(
+    url: str,
+    query: str,
+    top_k: int = 8,
+    min_score: float = 0.0,
+) -> str:
+    """Search indexed visual evidence using OCR text and return ranked frames."""
+    cache_id = _cache_id(url)
+    index = _read_visual_index(cache_id)
+    if not index:
+        return json.dumps({
+            "error": "No visual index found.",
+            "source_id": cache_id,
+            "suggestion": "Run index_ocular_audio_video_visuals first.",
+        }, ensure_ascii=False)
+    frames = frames_from_payload(index.get("frames", []))
+    results = search_visual_frames(frames, query, top_k=top_k, min_score=min_score)
+    return json.dumps({
+        "source_id": cache_id,
+        "url": url,
+        "query": query.strip(),
+        "result_count": len(results),
+        "results": [item.to_dict() for item in results],
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+async def get_ocular_audio_video_frame(
+    url: str,
+    timestamp_seconds: float,
+    enable_ocr: bool = False,
+) -> list:
+    """Return one higher-resolution frame plus machine-readable frame metadata."""
+    if timestamp_seconds < 0:
+        return ["Error: timestamp_seconds must be >= 0."]
+    try:
+        payload = await asyncio.wait_for(
+            asyncio.to_thread(
+                _blocking_visual_frame_capture,
+                url,
+                [int(timestamp_seconds)],
+                find_cookies_file(),
+                enable_ocr,
+            ),
+            timeout=NETWORK_TIMEOUT,
+        )
+        if not payload:
+            return [f"Error: Could not capture frame at {timestamp_seconds}s."]
+        frame = payload[0]
+        return [
+            json.dumps(frame, ensure_ascii=False, indent=2),
+            Image(path=frame["image_path"]),
+        ]
+    except asyncio.TimeoutError:
+        return [f"Error: Frame extraction timed out after {NETWORK_TIMEOUT} seconds."]
+    except Exception as exc:
+        return [f"Error during frame extraction: {exc}"]
+
+
+@mcp.tool()
+async def get_ocular_audio_video_frame_burst(
+    url: str,
+    center_seconds: float,
+    radius_seconds: float = 10,
+    count: int = 5,
+    enable_ocr: bool = False,
+) -> list:
+    """Return a bounded chronological burst of high-resolution frames around a moment."""
+    if center_seconds < 0:
+        return ["Error: center_seconds must be >= 0."]
+    timestamps = select_burst_timestamps(center_seconds, radius_seconds, count)
+    try:
+        payload = await asyncio.wait_for(
+            asyncio.to_thread(
+                _blocking_visual_frame_capture,
+                url,
+                timestamps,
+                find_cookies_file(),
+                enable_ocr,
+            ),
+            timeout=NETWORK_TIMEOUT,
+        )
+        result = [
+            json.dumps({
+                "url": url,
+                "center_seconds": center_seconds,
+                "requested_timestamps": timestamps,
+                "frame_count": len(payload),
+                "frames": payload,
+            }, ensure_ascii=False, indent=2)
+        ]
+        result.extend(Image(path=item["image_path"]) for item in payload)
+        return result
+    except asyncio.TimeoutError:
+        return [f"Error: Frame burst extraction timed out after {NETWORK_TIMEOUT} seconds."]
+    except Exception as exc:
+        return [f"Error during frame burst extraction: {exc}"]
+
+
+@mcp.tool()
+async def crop_ocular_audio_video_frame(
+    url: str,
+    timestamp_seconds: float,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    normalized: bool = True,
+    enable_ocr: bool = False,
+) -> list:
+    """Extract and crop a region from a timestamped frame using normalized or pixel coordinates."""
+    if timestamp_seconds < 0:
+        return ["Error: timestamp_seconds must be >= 0."]
+    try:
+        payload = await asyncio.wait_for(
+            asyncio.to_thread(
+                _blocking_visual_frame_capture,
+                url,
+                [int(timestamp_seconds)],
+                find_cookies_file(),
+                enable_ocr,
+            ),
+            timeout=NETWORK_TIMEOUT,
+        )
+        if not payload:
+            return [f"Error: Could not capture frame at {timestamp_seconds}s."]
+        frame_info = payload[0]
+        image = cv2.imread(frame_info["image_path"])
+        if image is None:
+            return ["Error: Captured frame could not be read."]
+        left, top, right, bottom = normalize_crop_box(
+            x, y, width, height, image.shape[1], image.shape[0], normalized
+        )
+        crop = image[top:bottom, left:right]
+        crop_path = Path(frame_info["image_path"]).with_name(
+            Path(frame_info["image_path"]).stem + f"_crop_{left}_{top}_{right}_{bottom}.jpg"
+        )
+        cv2.imwrite(str(crop_path), crop, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        ocr_text = extract_text_from_frame(str(crop_path)) if enable_ocr else ""
+        result = {
+            **frame_info,
+            "crop": {
+                "x": left,
+                "y": top,
+                "width": right - left,
+                "height": bottom - top,
+                "normalized": normalized,
+                "image_path": str(crop_path),
+                "ocr_text": ocr_text,
+            },
+        }
+        return [
+            json.dumps(result, ensure_ascii=False, indent=2),
+            Image(path=str(crop_path)),
+        ]
+    except asyncio.TimeoutError:
+        return [f"Error: Crop extraction timed out after {NETWORK_TIMEOUT} seconds."]
+    except Exception as exc:
+        return [f"Error during crop extraction: {exc}"]
 
 
 def _parse_duration_str(duration_str: str) -> int:
