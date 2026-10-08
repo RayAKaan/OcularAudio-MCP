@@ -13,11 +13,12 @@ from pathlib import Path
 from functools import lru_cache
 
 # Python version check (list[int] requires 3.9+)
-if sys.version_info < (3, 9):
-    sys.exit("Error: OcularAudio MCP requires Python 3.9 or higher. You are running Python {}.{}".format(*sys.version_info[:2]))
+if sys.version_info < (3, 10):
+    sys.exit("Error: OcularAudio MCP requires Python 3.10 or higher. You are running Python {}.{}".format(*sys.version_info[:2]))
 
 from requests import Session
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server import MCPServer
+from mcp.server.mcpserver import Image
 from youtube_transcript_api import YouTubeTranscriptApi
 import yt_dlp
 import cv2
@@ -67,6 +68,7 @@ from batch_index import (
     write_batch_result,
 )
 from universal_sources import universal_capabilities
+from protocol_contract import server_contract, tool_annotations
 from capability_modes import get_mode_policy, mode_capabilities, mode_output_contract, normalize_mode, resolve_mode
 from agentic_index import (
     ExecutionPolicy,
@@ -107,9 +109,11 @@ CACHE_MAX_AGE = 7 * 24 * 60 * 60
 NETWORK_TIMEOUT = 300
 
 # Initialize the Model Context Protocol (MCP) server
-mcp = FastMCP(
+mcp = MCPServer(
     "OcularAudio Server",
-    dependencies=["youtube-transcript-api", "yt-dlp", "opencv-python-headless"]
+    version=__version__,
+    instructions="Local-first universal media evidence and multimodal analysis server.",
+    dependencies=["youtube-transcript-api", "yt-dlp", "opencv-python-headless"],
 )
 
 # Global holder for the local whisper model instance (loaded lazily)
@@ -2508,6 +2512,49 @@ def copy_to_clipboard_native(text: str) -> bool:
     except Exception:
         pass
     return False
+
+
+
+@mcp.tool(annotations=tool_annotations("get_ocular_audio_contract"))
+async def get_ocular_audio_contract() -> dict:
+    """Return the machine-readable MCP contract and current capability surface."""
+    return server_contract(__version__, _check_system_capabilities())
+
+
+@mcp.resource("ocularaudio://capabilities", mime_type="application/json")
+async def ocular_audio_capabilities_resource() -> str:
+    """Expose current OcularAudio capabilities as an MCP resource."""
+    return json.dumps(_check_system_capabilities(), ensure_ascii=False, indent=2)
+
+
+@mcp.resource("ocularaudio://modes", mime_type="application/json")
+async def ocular_audio_modes_resource() -> str:
+    """Expose capability-mode policies as an MCP resource."""
+    return json.dumps(mode_capabilities(), ensure_ascii=False, indent=2)
+
+
+@mcp.resource("ocularaudio://health", mime_type="application/json")
+async def ocular_audio_health_resource() -> str:
+    """Expose current dependency and cache health as an MCP resource."""
+    return json.dumps(
+        health_report(
+            _check_system_capabilities(),
+            cache_dir=CACHE_DIR,
+            batch_cache_dir=BATCH_CACHE_DIR,
+        ),
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+@mcp.resource("ocularaudio://contract", mime_type="application/json")
+async def ocular_audio_contract_resource() -> str:
+    """Expose the machine-readable MCP contract as an MCP resource."""
+    return json.dumps(
+        server_contract(__version__, _check_system_capabilities()),
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 if __name__ == "__main__":
