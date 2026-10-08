@@ -522,3 +522,28 @@ npx ocular-audio --frame-at 120 "URL"
 npx ocular-audio --frame-burst 120 10 5 "URL"
 ```
 
+
+ 
+## Phase 4: Semantic & Hybrid Retrieval
+
+Phase 4 adds a local-first semantic retrieval layer over timestamped transcript and visual OCR evidence. It combines TF-IDF cosine similarity with lexical matching and exposes both component scores and the final fused score.
+
+### `search_ocular_audio_hybrid`
+
+Searches one media source across transcript evidence and indexed visual OCR. Use `semantic_weight` from 0 to 1 to control the semantic/lexical balance.
+
+### `search_ocular_audio_hybrid_cache`
+
+Searches all locally cached evidence across media sources using the same hybrid ranking.
+
+### Retrieval contract
+
+Every result includes:
+- final hybrid score
+- semantic score
+- lexical score
+- source type
+- timestamp range
+- source metadata
+
+This phase intentionally has no external embedding API or vector database dependency. The retrieval contract is designed so a neural embedding backend can replace the TF-IDF scorer later without changing the MCP result surface.
