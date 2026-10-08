@@ -16,7 +16,7 @@ from pathlib import Path
 import time
 from typing import Any, Awaitable, Callable
 
-from runtime_ops import MetricsRegistry, OperationTimer, rotate_audit_log
+from runtime_ops import GLOBAL_METRICS, OperationTimer, rotate_audit_log
 
 
 MAX_QUERY_LENGTH = 1000
@@ -157,7 +157,7 @@ async def execute_with_policy(
 ) -> tuple[Any, AuditRecord]:
     policy = (policy or ExecutionPolicy()).validate()
     started = time.monotonic()
-    metrics = MetricsRegistry()
+    metrics = GLOBAL_METRICS
     timer = OperationTimer(metrics, operation)
     last_error: Exception | None = None
     for attempt in range(policy.max_retries + 1):
