@@ -2280,6 +2280,12 @@ if __name__ == "__main__":
                     float(sys.argv[idx + 2]),
                     int(sys.argv[idx + 3]),
                 )
+        multimodal_mode = "--multimodal" in sys.argv
+        multimodal_search_query = None
+        if "--multimodal-search" in sys.argv:
+            idx = sys.argv.index("--multimodal-search")
+            if idx + 1 < len(sys.argv):
+                multimodal_search_query = sys.argv[idx + 1]
         analysis_depth = "understand"
         if "--analysis-depth" in sys.argv:
             idx = sys.argv.index("--analysis-depth")
@@ -2340,6 +2346,15 @@ if __name__ == "__main__":
                 )
                 for item in result:
                     print(item.path if hasattr(item, "path") else item)
+                return
+
+            if multimodal_search_query is not None or multimodal_mode:
+                print(await analyze_ocular_audio_multimodal(
+                    url=target_url,
+                    query=multimodal_search_query or "",
+                    enable_ocr=True,
+                    use_local_whisper=True,
+                ))
                 return
 
             # ── JSON mode: call underlying functions for structured data ─────
