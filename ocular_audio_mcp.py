@@ -48,8 +48,13 @@ from semantic_index import (
     fuse_evidence,
     hybrid_search,
 )
+from multimodal_index import (
+    build_multimodal_moments,
+    describe_moment,
+    rank_multimodal_moments,
+)
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 
 # Configure logging to stderr so it does NOT corrupt the MCP stdio protocol
 logging.basicConfig(
@@ -104,6 +109,12 @@ def _check_system_capabilities() -> dict:
             "cache_dir": str(VISUAL_CACHE_DIR),
             "max_frames_per_index": VISUAL_MAX_FRAMES,
             "ocr_search": True,
+        },
+        "multimodal_understanding": {
+            "available": True,
+            "modalities": ["transcript", "visual", "ocr"],
+            "deterministic_alignment": True,
+            "visual_change_detection": True,
         },
     }
 
@@ -1399,6 +1410,99 @@ async def search_ocular_audio_hybrid(
 
 
 @mcp.tool()
+@mcp.tool()
+async def analyze_ocular_audio_multimodal(
+    url: str,
+    query: str = "",
+    interval_seconds: float = 10,
+    window_seconds: float = 5,
+    top_k: int = 8,
+    enable_ocr: bool = True,
+    use_local_whisper: bool = True,
+    force: bool = False,
+) -> str:
+    """Build and rank unified transcript, visual, and OCR evidence moments."""
+    try:
+        cache_id, cached = await _ensure_evidence_cache(url, use_local_whisper)
+        metadata = cached.get("metadata", {})
+        duration = _parse_duration_str(metadata.get("duration", "0"))
+        if not duration:
+            duration = float(metadata.get("source", {}).get("duration_seconds") or 0)
+        segments = build_evidence_segments(
+            cached.get("transcript", ""),
+            duration_seconds=duration,
+            chapters=metadata.get("chapters", []),
+        )
+
+        existing = _read_visual_index(cache_id)
+        if force or not existing or bool(existing.get("ocr_enabled")) != bool(enable_ocr):
+            visual_result = await index_ocular_audio_video_visuals(
+                url=url,
+                interval_seconds=interval_seconds,
+                enable_ocr=enable_ocr,
+                force=True,
+            )
+            existing = json.loads(visual_result)
+        frames = frames_from_payload((existing or {}).get("frames", []))
+        moments = build_multimodal_moments(segments, frames, window_seconds=window_seconds)
+        ranked = rank_multimodal_moments(moments, query=query, top_k=top_k)
+        return json.dumps({
+            "source_id": cache_id,
+            "url": url,
+            "title": metadata.get("title", "Unknown"),
+            "query": query.strip(),
+            "modality_contract": ["transcript", "visual", "ocr"],
+            "moment_count": len(ranked),
+            "results": [describe_moment(moment) for moment in ranked],
+        }, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log.warning("Multimodal analysis failed: %s", exc)
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def inspect_ocular_audio_multimodal_moment(
+    url: str,
+    timestamp_seconds: float,
+    window_seconds: float = 5,
+    enable_ocr: bool = True,
+    use_local_whisper: bool = True,
+) -> list:
+    """Inspect one timestamp as a unified transcript, visual, and OCR evidence moment."""
+    if timestamp_seconds < 0:
+        return ["Error: timestamp_seconds must be >= 0."]
+    try:
+        payload = json.loads(await analyze_ocular_audio_multimodal(
+            url=url,
+            query="",
+            interval_seconds=max(1, window_seconds),
+            window_seconds=window_seconds,
+            top_k=50,
+            enable_ocr=enable_ocr,
+            use_local_whisper=use_local_whisper,
+        ))
+        moments = payload.get("results", [])
+        if not moments:
+            return [json.dumps({"error": "No multimodal evidence available."}, ensure_ascii=False)]
+        target = min(
+            moments,
+            key=lambda item: abs(float(item.get("timestamp_seconds", 0)) - timestamp_seconds),
+        )
+        result = [json.dumps({
+            "source_id": payload.get("source_id"),
+            "url": url,
+            "requested_timestamp_seconds": timestamp_seconds,
+            "moment": target,
+        }, ensure_ascii=False, indent=2)]
+        for frame in target.get("visual_frames", []):
+            path = frame.get("image_path")
+            if path and os.path.exists(path):
+                result.append(Image(path=path))
+        return result
+    except Exception as exc:
+        return [f"Error during multimodal moment inspection: {exc}"]
+
+
 async def search_ocular_audio_hybrid_cache(
     query: str,
     top_k: int = 10,
@@ -2176,6 +2280,12 @@ if __name__ == "__main__":
                     float(sys.argv[idx + 2]),
                     int(sys.argv[idx + 3]),
                 )
+        multimodal_mode = "--multimodal" in sys.argv
+        multimodal_search_query = None
+        if "--multimodal-search" in sys.argv:
+            idx = sys.argv.index("--multimodal-search")
+            if idx + 1 < len(sys.argv):
+                multimodal_search_query = sys.argv[idx + 1]
         analysis_depth = "understand"
         if "--analysis-depth" in sys.argv:
             idx = sys.argv.index("--analysis-depth")
@@ -2236,6 +2346,15 @@ if __name__ == "__main__":
                 )
                 for item in result:
                     print(item.path if hasattr(item, "path") else item)
+                return
+
+            if multimodal_search_query is not None or multimodal_mode:
+                print(await analyze_ocular_audio_multimodal(
+                    url=target_url,
+                    query=multimodal_search_query or "",
+                    enable_ocr=True,
+                    use_local_whisper=True,
+                ))
                 return
 
             # ── JSON mode: call underlying functions for structured data ─────

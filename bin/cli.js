@@ -129,6 +129,9 @@ OPTIONS
                           Capture a bounded frame burst around a timestamp
   --hybrid-search <q>   Search transcript + visual evidence
   --semantic-weight <w> Hybrid semantic weight (0..1)
+  --multimodal-search <q>
+                          Search unified transcript + visual + OCR moments
+  --multimodal           Analyze unified multimodal evidence
   --ocr                   Extract text from screenshots using Tesseract OCR
                             Requires: brew install tesseract (macOS) / choco install tesseract (Windows) / apt install tesseract-ocr (Linux)
                             Also requires: pip install pytesseract
@@ -184,6 +187,8 @@ let frameAt = null;
 let frameBurst = null;
 let hybridSearchQuery = null;
 let semanticWeight = null;
+let multimodalSearchQuery = null;
+let multimodalMode = false;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -234,6 +239,14 @@ for (let i = 0; i < args.length; i++) {
   }
   if (arg === '--semantic-weight' && i + 1 < args.length) {
     semanticWeight = args[++i];
+    continue;
+  }
+  if (arg === '--multimodal-search' && i + 1 < args.length) {
+    multimodalSearchQuery = args[++i];
+    continue;
+  }
+  if (arg === '--multimodal') {
+    multimodalMode = true;
     continue;
   }
   if (arg === '--check') {
@@ -418,6 +431,8 @@ if (frameAt !== null) pyArgs.push('--frame-at', frameAt);
 if (frameBurst) pyArgs.push('--frame-burst', ...frameBurst);
 if (hybridSearchQuery !== null) pyArgs.push('--hybrid-search', hybridSearchQuery);
 if (semanticWeight !== null) pyArgs.push('--semantic-weight', semanticWeight);
+if (multimodalSearchQuery !== null) pyArgs.push('--multimodal-search', multimodalSearchQuery);
+if (multimodalMode) pyArgs.push('--multimodal');
 if (forceMode) pyArgs.push('--force');
 if (verboseMode) pyArgs.push('--verbose');
 if (quietMode) pyArgs.push('--quiet');
