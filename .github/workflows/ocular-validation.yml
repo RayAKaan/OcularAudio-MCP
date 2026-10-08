@@ -18,7 +18,7 @@ jobs:
         with:
           node-version: "20"
       - name: Compile Python
-        run: python -m py_compile ocular_audio_mcp.py media_resolver.py evidence_index.py
+        run: python -m py_compile ocular_audio_mcp.py media_resolver.py evidence_index.py visual_index.py
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
       - name: Validate CLI syntax
