@@ -9,6 +9,7 @@ cross-video ranking/comparison without introducing an external database.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -134,7 +135,7 @@ async def run_batch(
             seen.add(source.source_id)
             unique.append(source)
 
-    semaphore = __import__("asyncio").Semaphore(limit)
+    semaphore = asyncio.Semaphore(limit)
 
     async def execute(source: BatchSource) -> BatchItem:
         async with semaphore:
@@ -144,7 +145,7 @@ async def run_batch(
             except Exception as exc:
                 return BatchItem(source=source, status="error", error=str(exc))
 
-    return await __import__("asyncio").gather(*(execute(source) for source in unique))
+    return await asyncio.gather(*(execute(source) for source in unique))
 
 
 def rank_cross_video_results(
