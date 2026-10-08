@@ -94,6 +94,12 @@ def _check_system_capabilities() -> dict:
         "opencv": False,
         "cookies_found": False,
         "cache_dir": str(CACHE_DIR),
+        "visual_evidence": {
+            "available": True,
+            "cache_dir": str(VISUAL_CACHE_DIR),
+            "max_frames_per_index": VISUAL_MAX_FRAMES,
+            "ocr_search": True,
+        },
     }
 
     # Check FFmpeg
@@ -1406,6 +1412,8 @@ async def get_ocular_audio_capabilities() -> str:
         f"Tesseract OCR: {'Available at ' + caps['tesseract']['path'] if caps['tesseract']['available'] else 'NOT FOUND - Optional for text extraction (--ocr flag)'}",
         f"Cookies File: {'Found' if caps['cookies_found'] else 'Not found (optional, needed for age-restricted videos)'}",
         f"Cache Directory: {caps['cache_dir']}",
+        f"Visual Evidence: {'Available' if caps['visual_evidence']['available'] else 'Unavailable'}",
+        f"Visual Cache: {caps['visual_evidence']['cache_dir']}",
     ]
 
     return "\n".join(output)
