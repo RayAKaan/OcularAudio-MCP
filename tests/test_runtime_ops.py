@@ -43,7 +43,7 @@ class RuntimeOpsTests(unittest.TestCase):
     def test_audit_rotation_preserves_active_log(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "audit.jsonl"
-            path.write_text(json.dumps({"event": "x", "payload": "x" * 100}) + "\n" * 100, encoding="utf-8")
+            path.write_text(json.dumps({"event": "x", "payload": "x" * 2000}) + "\n" * 100, encoding="utf-8")
             rotated = rotate_audit_log(path, max_bytes=1024, max_files=3)
             self.assertTrue(path.exists())
             self.assertTrue(rotated)
