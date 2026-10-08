@@ -71,6 +71,9 @@ from universal_sources import universal_capabilities
 from protocol_contract import server_contract, tool_annotations
 from prompts import prompt_catalog, render_compare_videos, render_inspect_video, render_search_video_evidence, render_visual_review
 from capability_modes import get_mode_policy, mode_capabilities, mode_output_contract, normalize_mode, resolve_mode
+from deployment_security import build_auth_settings, load_deployment_security, StaticBearerTokenVerifier
+from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.transport_security import TransportSecuritySettings
 from agentic_index import (
     ExecutionPolicy,
     append_audit_record,
@@ -109,12 +112,37 @@ CACHE_MAX_AGE = 7 * 24 * 60 * 60
 # Timeout for blocking network operations (seconds)
 NETWORK_TIMEOUT = 300
 
+# Initialize deployment security once at startup. Configuration is environment-driven
+# so credentials never need to be committed or passed as CLI arguments.
+DEPLOYMENT_SECURITY = load_deployment_security()
+AUTH_SETTINGS = build_auth_settings(DEPLOYMENT_SECURITY)
+TOKEN_VERIFIER = (
+    StaticBearerTokenVerifier(
+        DEPLOYMENT_SECURITY.auth_token,
+        DEPLOYMENT_SECURITY.resource_server_url,
+        DEPLOYMENT_SECURITY.required_scopes,
+        DEPLOYMENT_SECURITY.token_ttl_seconds,
+    )
+    if DEPLOYMENT_SECURITY.require_auth and DEPLOYMENT_SECURITY.auth_token
+    else None
+)
+TRANSPORT_SECURITY = (
+    TransportSecuritySettings(
+        allowed_hosts=list(DEPLOYMENT_SECURITY.allowed_hosts),
+        allowed_origins=list(DEPLOYMENT_SECURITY.allowed_origins),
+    )
+    if DEPLOYMENT_SECURITY.allowed_hosts or DEPLOYMENT_SECURITY.allowed_origins
+    else None
+)
+
 # Initialize the Model Context Protocol (MCP) server
 mcp = MCPServer(
     "OcularAudio Server",
     version=__version__,
     instructions="Local-first universal media evidence and multimodal analysis server.",
     dependencies=["youtube-transcript-api", "yt-dlp", "opencv-python-headless"],
+    token_verifier=TOKEN_VERIFIER,
+    auth=AUTH_SETTINGS,
 )
 
 # Global holder for the local whisper model instance (loaded lazily)
@@ -2546,6 +2574,27 @@ def compare_videos(sources: str, question: str) -> str:
     return render_compare_videos(sources, question)
 
 
+@mcp.tool(annotations=tool_annotations("get_ocular_audio_identity"))
+async def get_ocular_audio_identity() -> dict[str, object]:
+    """Return the authenticated HTTP principal without exposing bearer credentials."""
+    token = get_access_token()
+    if token is None:
+        return {"authenticated": False, "transport": "stdio_or_in_process"}
+    return {
+        "authenticated": True,
+        "subject": token.subject or "",
+        "client_id": token.client_id,
+        "scopes": list(token.scopes),
+        "expires_at": token.expires_at,
+    }
+
+
+@mcp.resource("ocularaudio://security", mime_type="application/json")
+async def ocular_audio_security_resource() -> str:
+    """Expose non-secret deployment security state."""
+    return json.dumps(DEPLOYMENT_SECURITY.public_summary(), ensure_ascii=False, indent=2)
+
+
 @mcp.resource("ocularaudio://capabilities", mime_type="application/json")
 async def ocular_audio_capabilities_resource() -> str:
     """Expose current OcularAudio capabilities as an MCP resource."""
@@ -2610,6 +2659,7 @@ if __name__ == "__main__":
                 port=port,
                 json_response=True,
                 stateless_http=False,
+                transport_security=TRANSPORT_SECURITY,
             )
         else:
             mcp.run(transport="stdio")
