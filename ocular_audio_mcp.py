@@ -67,6 +67,7 @@ from batch_index import (
     write_batch_result,
 )
 from universal_sources import universal_capabilities
+from capability_modes import get_mode_policy, mode_capabilities, mode_output_contract, normalize_mode, resolve_mode
 from agentic_index import (
     ExecutionPolicy,
     append_audit_record,
@@ -124,6 +125,7 @@ def _check_system_capabilities() -> dict:
         "supported_analysis_levels": ["glance", "understand", "deep", "omniscient"],
         "supported_source_types": ["web_url", "local_file", "direct_media_url", "live_url", "stream_url"],
         "source_coverage": universal_capabilities(),
+        "capability_modes": mode_capabilities(),
         "ffmpeg": False,
         "whisper": {"available": False, "engine": None, "model_size": None},
         "tesseract": {"available": False, "path": None},
@@ -1549,6 +1551,7 @@ async def inspect_ocular_audio_multimodal_moment(
 async def plan_ocular_audio_analysis(
     query: str = "",
     multi_video: bool = False,
+    mode: str = "auto",
     timeout_seconds: float = 120,
     max_retries: int = 2,
 ) -> str:
@@ -1593,6 +1596,7 @@ async def run_ocular_audio_analysis(
     url: str,
     query: str = "",
     multi_video: bool = False,
+    mode: str = "auto",
     timeout_seconds: float = 120,
     max_retries: int = 2,
 ) -> str:

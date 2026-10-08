@@ -20,7 +20,8 @@
     "requirements.txt",
     "README.md",
     "LICENSE",
-    "universal_sources.py"
+    "universal_sources.py",
+    "capability_modes.py"
   ],
   "keywords": [
     "youtube",

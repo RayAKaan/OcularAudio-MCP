@@ -1,3 +1,42 @@
+
+## Phase 9: Three-Level Capability Architecture
+
+Phase 9 introduces three processing modes over the same universal source layer: **Lite**, **Intelligence**, and **Deep**. All modes accept the same URLs, platforms, direct media sources, streams, and local files. The difference is processing depth, evidence breadth, and response richness.
+
+### Modes
+
+| Mode | Purpose | Processing profile | Output |
+|---|---|---|---|
+| `lite` | Everyday tasks | Fast, sparse evidence, transcript/metadata-first | Compact |
+| `intelligence` | Serious analysis | Hybrid retrieval, OCR, visual and multimodal evidence | Rich |
+| `deep` | Maximum analysis | Maximum practical evidence and multi-step orchestration | Comprehensive |
+
+`auto` is the default. It selects a mode from the request and escalates only when the wording clearly requires deeper evidence. Users can override it explicitly.
+
+### Selecting a mode
+
+CLI:
+
+```bash
+npx ocular-audio --mode auto "URL"
+npx ocular-audio --mode lite "URL"
+npx ocular-audio --mode intelligence "URL"
+npx ocular-audio --mode deep "URL"
+```
+
+MCP clients can call `get_ocular_audio_modes` to discover the policies and `configure_ocular_audio_mode` to validate an explicit selection. Agentic planning and execution also accept a `mode` argument and report the resolved mode in the plan.
+
+### Design contract
+
+- One NPM package.
+- One local MCP process.
+- One universal source resolver.
+- No separate Lite/Intelligence/Deep codebases.
+- No hosted service is introduced.
+- Mode selection controls analysis policy and output contract, not source coverage.
+- Package version remains **1.3.0**.
+
+The local MCP remains compatible with stdio-style host integration: a host launches the local process and exchanges MCP messages over stdin/stdout. MCP's stdio transport is specifically intended for local child-process integrations. citeturn0search1turn0search3
 # OcularAudio MCP
 
 ![OcularAudio MCP](OcularAudioMCP.png)
