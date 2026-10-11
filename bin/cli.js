@@ -13,10 +13,10 @@ try {
   chalk = require('chalk');
 } catch {
   // Fallback: no colors
-  chalk = new Proxy({}, {
-    get: () => new Proxy({}, {
-      get: () => (s) => s
-    })
+  const colorize = (value) => String(value);
+  chalk = new Proxy(colorize, {
+    get: () => colorize,
+    apply: (_target, _thisArg, args) => colorize(args[0])
   });
 }
 
@@ -494,11 +494,13 @@ if (!targetUrl && !transportMode) {
   process.exit(1);
 }
 
-const localSource = fs.existsSync(targetUrl) && fs.statSync(targetUrl).isFile();
-if (!localSource && !/^(?:https?|rtmp(?:s|e|t|ts)?|rtsp|srt|udp):\/\//i.test(targetUrl)) {
-  console.error(chalk.red('[ERROR] Invalid media source.'));
-  console.error(chalk.gray('Provide an http(s), media-stream, or an existing local media file.'));
-  process.exit(1);
+if (!transportMode && targetUrl !== "local") {
+  const localSource = targetUrl && fs.existsSync(targetUrl) && fs.statSync(targetUrl).isFile();
+  if (!localSource && !/^(?:https?|rtmp(?:s|e|t|ts)?|rtsp|srt|udp):\/\//i.test(targetUrl || "")) {
+    console.error(chalk.red('[ERROR] Invalid media source.'));
+    console.error(chalk.gray('Provide an http(s), media-stream, or an existing local media file.'));
+    process.exit(1);
+  }
 }
 
 // ── Build Python arguments ──────────────────────────────────────────────────
