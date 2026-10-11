@@ -49,6 +49,8 @@ Research and lecture analysis · product demonstrations · competitor analysis �
 
 ### NPM / MCP
 
+**Release status:** this repository contains source version **1.3.0**, but that version is not yet published to npm. The latest published package is **1.2.1**, so the `npx` examples below install 1.2.1 until a separate 1.3.0 release is authorized and published. To test the current checkout, clone the repository, install the Python dependencies from `requirements.txt`, then run `node bin/cli.js` from the checkout.
+
     npx -y ocular-audio-mcp
 
 Local MCP hosts can launch the same command. Example:

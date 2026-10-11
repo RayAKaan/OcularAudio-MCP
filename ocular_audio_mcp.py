@@ -1423,26 +1423,39 @@ async def crop_ocular_audio_video_frame(
         return [f"Error during crop extraction: {exc}"]
 
 
-def _semantic_documents_for_source(url: str) -> list[SemanticDocument]:
+def _semantic_documents_for_source(
+    url: str,
+    cached: dict | None = None,
+) -> list[SemanticDocument]:
+    """Build hybrid-search documents from the canonical transcript and visual caches."""
     cache_id = _cache_id(url)
     documents: list[SemanticDocument] = []
 
-    evidence_cache = _evidence_cache_path(cache_id)
-    if evidence_cache.exists():
-        try:
-            payload = json.loads(evidence_cache.read_text(encoding="utf-8"))
-            for item in payload.get("segments", []):
-                documents.append(SemanticDocument(
-                    document_id=str(item.get("evidence_id", "")),
-                    text=str(item.get("text", "")),
-                    source=str(item.get("source", "transcript")),
-                    start_seconds=float(item.get("start_seconds", 0)),
-                    end_seconds=float(item.get("end_seconds", 0)),
-                    chapter=str(item.get("chapter", "")),
-                    metadata={"source_id": cache_id},
-                ))
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            pass
+    # Transcript evidence is derived from the same cache used by the other
+    # evidence tools; it is not stored in a separate, nonexistent JSON file.
+    if cached is None:
+        cached = read_from_cache(cache_id)
+    if cached:
+        metadata = cached.get("metadata", {})
+        source_metadata = metadata.get("source", {})
+        duration = _parse_duration_str(str(metadata.get("duration", "0")))
+        if not duration:
+            duration = float(source_metadata.get("duration_seconds") or 0)
+        segments = build_evidence_segments(
+            cached.get("transcript", ""),
+            duration_seconds=duration,
+            chapters=metadata.get("chapters", []),
+        )
+        for item in segments:
+            documents.append(SemanticDocument(
+                document_id=str(item.evidence_id),
+                text=str(item.text),
+                source=str(item.source),
+                start_seconds=float(item.start_seconds),
+                end_seconds=float(item.end_seconds),
+                chapter=str(item.chapter),
+                metadata={"source_id": cache_id},
+            ))
 
     visual_cache = _read_visual_index(cache_id)
     if visual_cache:
@@ -1469,7 +1482,8 @@ async def search_ocular_audio_hybrid(
 ) -> str:
     """Search transcript and visual OCR evidence with transparent hybrid ranking."""
     try:
-        documents = await asyncio.to_thread(_semantic_documents_for_source, url)
+        cache_id, cached = await _ensure_evidence_cache(url)
+        documents = await asyncio.to_thread(_semantic_documents_for_source, url, cached)
         results = await asyncio.to_thread(
             hybrid_search,
             documents,
