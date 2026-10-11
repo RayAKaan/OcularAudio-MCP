@@ -47,7 +47,7 @@ class MCPV2SurfaceTests(unittest.TestCase):
                         "chapters": [],
                     },
                     "transcript": (
-                        "[00:00] The pricing plans include a starter tier.\\n"
+                        "[00:00] The pricing plans include a starter tier.\n"
                         "[00:10] Enterprise customers receive advanced reporting."
                     ),
                     "method": "test_fixture",
