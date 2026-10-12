@@ -70,7 +70,10 @@ from batch_index import (
 from universal_sources import universal_capabilities
 from protocol_contract import server_contract, tool_annotations
 from prompts import prompt_catalog, render_compare_videos, render_inspect_video, render_search_video_evidence, render_visual_review
-from capability_modes import get_mode_policy, mode_capabilities, mode_output_contract, normalize_mode, resolve_mode
+from capability_modes import (
+    build_mode_decision, get_mode_policy, mode_capabilities, mode_execution_controls,
+    mode_output_contract, normalize_mode, resolve_mode,
+)
 from deployment_security import build_auth_settings, load_deployment_security, StaticBearerTokenVerifier
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.transport_security import TransportSecuritySettings
@@ -1203,60 +1206,64 @@ def _blocking_visual_frame_capture(
 @mcp.tool(annotations=tool_annotations("index_ocular_audio_video_visuals"))
 async def index_ocular_audio_video_visuals(
     url: str,
-    interval_seconds: float = 10,
-    enable_ocr: bool = True,
+    interval_seconds: float | None = None,
+    enable_ocr: bool | None = None,
     force: bool = False,
+    mode: str = "auto",
 ) -> str:
-    """Build or refresh a persistent timestamped visual evidence index for a media source."""
+    """Build a persistent visual evidence index under a mode-specific sampling budget."""
     try:
+        controls = mode_execution_controls(
+            mode, requested_features=("visual",), interval_seconds=interval_seconds,
+            enable_ocr=enable_ocr, available_capabilities=_check_system_capabilities(),
+        )
+        decision = controls["decision"]
+        if not decision["features"]["visual"]:
+            return json.dumps({
+                "error": "Visual indexing is unavailable because this runtime lacks required media dependencies.",
+                "mode_decision": decision,
+            }, ensure_ascii=False)
         cache_id = _cache_id(url)
+        effective_interval, effective_ocr = controls["interval_seconds"], controls["enable_ocr"]
+        max_frames = decision["limits"]["max_frames"]
         if not force:
             existing = _read_visual_index(cache_id)
-            if existing and existing.get("version") == VISUAL_INDEX_VERSION:
+            if (
+                existing and existing.get("version") == VISUAL_INDEX_VERSION
+                and existing.get("mode") == decision["resolved_mode"]
+                and existing.get("interval_seconds") == effective_interval
+                and existing.get("ocr_enabled") == effective_ocr
+                and int(existing.get("frame_count", 0)) <= max_frames
+            ):
                 return json.dumps(existing, ensure_ascii=False, indent=2)
-
+        timeout = min(NETWORK_TIMEOUT, float(decision["limits"]["max_runtime_seconds"]))
         resolved = await asyncio.wait_for(
-            asyncio.to_thread(resolve_media_source, url, find_cookies_file()),
-            timeout=NETWORK_TIMEOUT,
+            asyncio.to_thread(resolve_media_source, url, find_cookies_file()), timeout=timeout,
         )
         duration = float(resolved.get("duration_seconds") or 0)
         if duration <= 0:
             return json.dumps({
                 "error": "Unable to determine media duration; visual indexing requires a finite video.",
-                "source_id": cache_id,
+                "source_id": cache_id, "mode_decision": decision,
             }, ensure_ascii=False)
-
-        timestamps = sample_timestamps(
-            duration,
-            interval_seconds=interval_seconds,
-            max_frames=VISUAL_MAX_FRAMES,
-        )
+        timestamps = sample_timestamps(duration, interval_seconds=effective_interval, max_frames=max_frames)
         frames = await asyncio.wait_for(
             asyncio.to_thread(
-                _blocking_visual_frame_capture,
-                url,
-                timestamps,
-                find_cookies_file(),
-                enable_ocr,
-            ),
-            timeout=NETWORK_TIMEOUT,
+                _blocking_visual_frame_capture, url, timestamps, find_cookies_file(), effective_ocr,
+            ), timeout=timeout,
         )
         payload = {
-            "version": VISUAL_INDEX_VERSION,
-            "source_id": cache_id,
-            "url": url,
-            "title": resolved.get("title", ""),
-            "duration_seconds": duration,
-            "interval_seconds": max(1.0, float(interval_seconds)),
-            "ocr_enabled": bool(enable_ocr),
-            "frame_count": len(frames),
-            "frames": frames,
+            "version": VISUAL_INDEX_VERSION, "source_id": cache_id, "url": url,
+            "title": resolved.get("title", ""), "duration_seconds": duration,
+            "mode": decision["resolved_mode"], "mode_decision": decision,
+            "interval_seconds": effective_interval, "max_frames": max_frames,
+            "ocr_enabled": effective_ocr, "frame_count": len(frames), "frames": frames,
             "created_at": time.time(),
         }
         _write_visual_index(cache_id, payload)
         return json.dumps(payload, ensure_ascii=False, indent=2)
     except asyncio.TimeoutError:
-        return json.dumps({"error": "Visual indexing timed out."}, ensure_ascii=False)
+        return json.dumps({"error": "Visual indexing timed out within the selected mode budget."}, ensure_ascii=False)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
@@ -1477,26 +1484,24 @@ def _semantic_documents_for_source(
 async def search_ocular_audio_hybrid(
     url: str,
     query: str,
-    top_k: int = 8,
+    top_k: int | None = None,
     semantic_weight: float = 0.65,
+    mode: str = "auto",
 ) -> str:
-    """Search transcript and visual OCR evidence with transparent hybrid ranking."""
+    """Search transcript and visual OCR evidence under a bounded capability policy."""
     try:
+        controls = mode_execution_controls(mode, query, top_k=top_k, requested_features=("retrieval",))
         cache_id, cached = await _ensure_evidence_cache(url)
         documents = await asyncio.to_thread(_semantic_documents_for_source, url, cached)
         results = await asyncio.to_thread(
-            hybrid_search,
-            documents,
-            query,
-            top_k,
-            semantic_weight,
+            hybrid_search, documents, query, controls["top_k"], semantic_weight,
         )
         return json.dumps({
-            "source_id": _cache_id(url),
-            "query": query.strip(),
+            "source_id": cache_id, "query": query.strip(),
+            "mode_decision": controls["decision"],
+            "effective_controls": {"top_k": controls["top_k"]},
             "semantic_weight": max(0.0, min(1.0, float(semantic_weight))),
-            "result_count": len(results),
-            "results": [item.to_dict() for item in results],
+            "result_count": len(results), "results": [item.to_dict() for item in results],
         }, ensure_ascii=False, indent=2)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -1507,47 +1512,70 @@ async def search_ocular_audio_hybrid(
 async def analyze_ocular_audio_multimodal(
     url: str,
     query: str = "",
-    interval_seconds: float = 10,
+    interval_seconds: float | None = None,
     window_seconds: float = 5,
-    top_k: int = 8,
-    enable_ocr: bool = True,
+    top_k: int | None = None,
+    enable_ocr: bool | None = None,
     use_local_whisper: bool = True,
     force: bool = False,
+    mode: str = "auto",
 ) -> str:
-    """Build and rank unified transcript, visual, and OCR evidence moments."""
+    """Build and rank unified evidence moments under a bounded mode policy."""
     try:
-        cache_id, cached = await _ensure_evidence_cache(url, use_local_whisper)
+        controls = mode_execution_controls(
+            mode, query, interval_seconds=interval_seconds, top_k=top_k,
+            enable_ocr=enable_ocr, requested_features=("multimodal",),
+            available_capabilities=_check_system_capabilities(),
+        )
+        decision = controls["decision"]
+        if not decision["features"]["multimodal"]:
+            return json.dumps({
+                "error": f"Mode '{decision['resolved_mode']}' or this runtime does not support multimodal analysis.",
+                "mode_decision": decision,
+            }, ensure_ascii=False)
+        timeout = min(NETWORK_TIMEOUT, float(decision["limits"]["max_runtime_seconds"]))
+        cache_id, cached = await asyncio.wait_for(
+            _ensure_evidence_cache(url, use_local_whisper), timeout=timeout,
+        )
         metadata = cached.get("metadata", {})
         duration = _parse_duration_str(metadata.get("duration", "0"))
         if not duration:
             duration = float(metadata.get("source", {}).get("duration_seconds") or 0)
         segments = build_evidence_segments(
-            cached.get("transcript", ""),
-            duration_seconds=duration,
+            cached.get("transcript", ""), duration_seconds=duration,
             chapters=metadata.get("chapters", []),
         )
-
         existing = _read_visual_index(cache_id)
-        if force or not existing or bool(existing.get("ocr_enabled")) != bool(enable_ocr):
+        if (
+            force or not existing
+            or existing.get("mode") != decision["resolved_mode"]
+            or existing.get("interval_seconds") != controls["interval_seconds"]
+            or bool(existing.get("ocr_enabled")) != controls["enable_ocr"]
+            or int(existing.get("frame_count", 0)) > decision["limits"]["max_frames"]
+        ):
             visual_result = await index_ocular_audio_video_visuals(
-                url=url,
-                interval_seconds=interval_seconds,
-                enable_ocr=enable_ocr,
-                force=True,
+                url=url, interval_seconds=controls["interval_seconds"],
+                enable_ocr=controls["enable_ocr"], force=True, mode=decision["resolved_mode"],
             )
             existing = json.loads(visual_result)
+            if existing.get("error"):
+                return json.dumps({"error": existing["error"], "mode_decision": decision}, ensure_ascii=False)
         frames = frames_from_payload((existing or {}).get("frames", []))
         moments = build_multimodal_moments(segments, frames, window_seconds=window_seconds)
-        ranked = rank_multimodal_moments(moments, query=query, top_k=top_k)
+        ranked = rank_multimodal_moments(moments, query=query, top_k=controls["top_k"])
         return json.dumps({
-            "source_id": cache_id,
-            "url": url,
-            "title": metadata.get("title", "Unknown"),
-            "query": query.strip(),
+            "source_id": cache_id, "url": url, "title": metadata.get("title", "Unknown"),
+            "query": query.strip(), "mode_decision": decision,
+            "effective_controls": {
+                "interval_seconds": controls["interval_seconds"],
+                "top_k": controls["top_k"], "enable_ocr": controls["enable_ocr"],
+            },
             "modality_contract": ["transcript", "visual", "ocr"],
             "moment_count": len(ranked),
             "results": [describe_moment(moment) for moment in ranked],
         }, ensure_ascii=False, indent=2)
+    except asyncio.TimeoutError:
+        return json.dumps({"error": "Multimodal analysis exceeded the selected mode runtime budget."}, ensure_ascii=False)
     except Exception as exc:
         log.warning("Multimodal analysis failed: %s", exc)
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -1603,15 +1631,19 @@ async def plan_ocular_audio_analysis(
     mode: str = "auto",
     timeout_seconds: float = 120,
     max_retries: int = 2,
+    source_count: int = 1,
+    estimated_duration_seconds: float | None = None,
+    budget_seconds: float | None = None,
 ) -> str:
-    """Build a deterministic, inspectable execution plan for an analysis request."""
+    """Build a mode-aware plan with explicit evidence, time, and retry budgets."""
     try:
         policy = ExecutionPolicy(timeout_seconds=timeout_seconds, max_retries=max_retries).validate()
-        return json.dumps(
-            build_execution_plan(query, multi_video=multi_video, policy=policy).to_dict(),
-            ensure_ascii=False,
-            indent=2,
+        plan = build_execution_plan(
+            query, multi_video=multi_video, policy=policy, mode=mode,
+            source_count=source_count, estimated_duration_seconds=estimated_duration_seconds,
+            available_capabilities=_check_system_capabilities(), budget_seconds=budget_seconds,
         )
+        return json.dumps(plan.to_dict(), ensure_ascii=False, indent=2)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
@@ -1648,47 +1680,52 @@ async def run_ocular_audio_analysis(
     mode: str = "auto",
     timeout_seconds: float = 120,
     max_retries: int = 2,
+    source_count: int = 1,
+    estimated_duration_seconds: float | None = None,
+    budget_seconds: float | None = None,
 ) -> str:
-    """Execute the deterministic analysis plan using existing evidence tools."""
+    """Execute a mode-aware, bounded plan using existing evidence tools."""
     try:
+        if multi_video:
+            source_count = len(parse_batch_manifest(url))
         policy = ExecutionPolicy(timeout_seconds=timeout_seconds, max_retries=max_retries).validate()
-        plan = build_execution_plan(query, multi_video=multi_video, policy=policy)
+        plan = build_execution_plan(
+            query, multi_video=multi_video, policy=policy, mode=mode,
+            source_count=source_count, estimated_duration_seconds=estimated_duration_seconds,
+            available_capabilities=_check_system_capabilities(), budget_seconds=budget_seconds,
+        )
+        effective_policy = ExecutionPolicy(**plan.to_dict()["policy"]).validate()
+        top_k = int(plan.mode_decision["limits"]["max_evidence"])
+        resolved_mode = plan.mode_decision["resolved_mode"]
         outputs = []
         for step in plan.steps:
             if step.operation == "inspect_source":
                 worker = lambda: inspect_ocular_audio_source(url)
             elif step.operation == "search_hybrid":
-                worker = lambda: search_ocular_audio_hybrid(url=url, query=query, top_k=8)
+                worker = lambda: search_ocular_audio_hybrid(url=url, query=query, top_k=top_k, mode=resolved_mode)
             elif step.operation == "inspect_moment":
-                evidence = await search_ocular_audio_hybrid(url=url, query=query, top_k=1)
+                evidence = await search_ocular_audio_hybrid(url=url, query=query, top_k=1, mode=resolved_mode)
                 payload = json.loads(evidence)
                 timestamp = float((payload.get("results") or [{}])[0].get("start_seconds", 0))
                 worker = lambda: inspect_ocular_audio_moment(url=url, timestamp_seconds=timestamp)
             elif step.operation == "search_visual":
-                worker = lambda: search_ocular_audio_visuals(url=url, query=query, top_k=8)
+                worker = lambda: search_ocular_audio_visuals(url=url, query=query, top_k=top_k)
             elif step.operation == "timeline":
                 worker = lambda: get_ocular_audio_video_timeline(url=url)
             elif step.operation == "search_batch":
-                worker = lambda: search_ocular_audio_videos(sources_json=url, query=query, top_k=12)
+                worker = lambda: search_ocular_audio_videos(sources_json=url, query=query, top_k=top_k)
             elif step.operation == "compare_batch":
                 worker = lambda: compare_ocular_audio_videos(sources_json=url, query=query)
             else:
                 raise ValueError(f"Unsupported plan operation: {step.operation}")
-
-            result, audit = await execute_with_policy(step.operation, worker, policy)
+            result, audit = await execute_with_policy(step.operation, worker, effective_policy)
             append_audit_record(AUDIT_LOG_PATH, audit)
-            outputs.append({
-                "step": step.to_dict(),
-                "audit": audit.to_dict(),
-                "result": result,
-            })
+            outputs.append({"step": step.to_dict(), "audit": audit.to_dict(), "result": result})
             if audit.status != "success" and step.required:
                 break
-
         return json.dumps({
-            "plan": plan.to_dict(),
-            "completed_steps": len(outputs),
-            "results": outputs,
+            "plan": plan.to_dict(), "mode_decision": plan.mode_decision,
+            "completed_steps": len(outputs), "results": outputs,
         }, ensure_ascii=False, indent=2, default=str)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -1698,22 +1735,42 @@ async def run_ocular_audio_analysis(
 async def analyze_ocular_audio_batch(
     manifest_json: str,
     query: str = "",
-    interval_seconds: float = 10,
+    interval_seconds: float | None = None,
     window_seconds: float = 5,
-    top_k: int = 8,
-    enable_ocr: bool = True,
+    top_k: int | None = None,
+    enable_ocr: bool | None = None,
     use_local_whisper: bool = True,
-    max_concurrency: int = 2,
+    max_concurrency: int | None = None,
     force: bool = False,
+    mode: str = "auto",
 ) -> str:
-    """Analyze multiple media sources with bounded concurrency and isolated failures."""
+    """Analyze a bounded source collection using the selected capability mode."""
     try:
         sources = parse_batch_manifest(manifest_json)
         if not sources:
             return json.dumps({"error": "Batch manifest contains no valid sources."}, ensure_ascii=False)
-        concurrency = validate_concurrency(max_concurrency)
-        options = {"interval_seconds": interval_seconds, "window_seconds": window_seconds,
-                   "top_k": top_k, "enable_ocr": enable_ocr, "use_local_whisper": use_local_whisper}
+        controls = mode_execution_controls(
+            mode, query, interval_seconds=interval_seconds, top_k=top_k,
+            enable_ocr=enable_ocr, max_concurrency=max_concurrency,
+            source_count=len(sources), requested_features=("batch", "multimodal"),
+            available_capabilities=_check_system_capabilities(), multi_video=len(sources) > 1,
+        )
+        decision = controls["decision"]
+        if not decision["features"]["batch"] or not decision["features"]["multimodal"]:
+            return json.dumps({
+                "error": f"Mode '{decision['resolved_mode']}' or this runtime does not support batch multimodal analysis.",
+                "mode_decision": decision,
+            }, ensure_ascii=False)
+        concurrency = validate_concurrency(controls["max_concurrency"])
+        interval, effective_top_k, effective_ocr = (
+            controls["interval_seconds"], controls["top_k"], controls["enable_ocr"]
+        )
+        options = {
+            "mode": decision["resolved_mode"], "mode_decision": decision,
+            "interval_seconds": interval, "window_seconds": window_seconds,
+            "top_k": effective_top_k, "enable_ocr": effective_ocr,
+            "use_local_whisper": use_local_whisper,
+        }
         batch_id = stable_batch_id(sources, query, options)
         if not force:
             cached = read_batch_result(BATCH_CACHE_DIR, batch_id)
@@ -1722,24 +1779,31 @@ async def analyze_ocular_audio_batch(
 
         async def worker(source):
             raw = await analyze_ocular_audio_multimodal(
-                url=source.url, query=query, interval_seconds=interval_seconds,
-                window_seconds=window_seconds, top_k=top_k, enable_ocr=enable_ocr,
-                use_local_whisper=use_local_whisper, force=force)
+                url=source.url, query=query, interval_seconds=interval,
+                window_seconds=window_seconds, top_k=effective_top_k,
+                enable_ocr=effective_ocr, use_local_whisper=use_local_whisper,
+                force=force, mode=decision["resolved_mode"],
+            )
             payload = json.loads(raw)
             if payload.get("error"):
                 raise RuntimeError(payload["error"])
             return payload
 
-        items = await run_batch(sources, worker, max_concurrency=concurrency)
+        items = await asyncio.wait_for(
+            run_batch(sources, worker, max_concurrency=concurrency),
+            timeout=float(decision["limits"]["max_runtime_seconds"]),
+        )
         summary = summarize_batch(items)
         payload = {
-            "batch_id": batch_id, "query": query.strip(),
+            "batch_id": batch_id, "query": query.strip(), "mode_decision": decision,
             "options": {**options, "max_concurrency": concurrency},
             "summary": summary, "sources": [item.to_dict() for item in items],
-            "results": rank_cross_video_results(items, query, top_k=max(1, min(top_k, 100))),
+            "results": rank_cross_video_results(items, query, top_k=max(1, min(effective_top_k, 100))),
         }
         write_batch_result(BATCH_CACHE_DIR, batch_id, payload)
         return json.dumps(payload, ensure_ascii=False, indent=2)
+    except asyncio.TimeoutError:
+        return json.dumps({"error": "Batch analysis exceeded the selected mode runtime budget."}, ensure_ascii=False)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
@@ -2133,8 +2197,9 @@ async def get_ocular_audio_video_context(
     url: str,
     detail_level: str = "auto",
     use_local_whisper: bool = True,
-    enable_ocr: bool = False,
-    analysis_depth: str = "understand"
+    enable_ocr: bool | None = None,
+    analysis_depth: str | None = None,
+    capability_mode: str = "intelligence",
 ) -> list:
     """
     Extracts transcript, metadata, and optional intelligent screenshots from a video.
@@ -2160,17 +2225,27 @@ async def get_ocular_audio_video_context(
         detail_level = "auto"
 
     try:
-        normalized_depth = normalize_analysis_level(analysis_depth)
+        controls = mode_execution_controls(
+            capability_mode, enable_ocr=enable_ocr, requested_features=("visual",),
+            available_capabilities=_check_system_capabilities(),
+        )
+        mode_decision, mode_policy = controls["decision"], controls["policy"]
+        normalized_depth = normalize_analysis_level(analysis_depth or mode_policy["analysis_depth"])
     except ValueError as exc:
         return [f"Error: {exc}"]
 
+    enable_ocr = controls["enable_ocr"]
+    if mode_decision["resolved_mode"] == "lite" or not mode_decision["features"]["visual"]:
+        detail_level = "overview"
+    elif mode_decision["resolved_mode"] == "deep":
+        detail_level = "deep"
     if normalized_depth == "glance":
         detail_level = "overview"
     elif normalized_depth == "deep":
         detail_level = "deep"
     elif normalized_depth == "omniscient":
         detail_level = "deep"
-        enable_ocr = True
+        enable_ocr = mode_decision["features"]["ocr"]
 
     video_id = extract_video_id(url)
     is_youtube = bool(video_id)
@@ -2274,6 +2349,8 @@ async def get_ocular_audio_video_context(
     # 4. OVERVIEW MODE — no screenshots
     if detail_level == "overview":
         return [
+            f"[CAPABILITY MODE: {mode_decision['resolved_mode']}]",
+            f"[MODE DECISION: {mode_decision['reason']}]",
             "[VIDEO CONTEXT - OVERVIEW]",
             header,
             "[TRANSCRIPT]",
@@ -2291,6 +2368,7 @@ async def get_ocular_audio_video_context(
                 break
 
     key_moments = extract_key_timestamps(transcript_text, duration_secs, mode=detail_level)
+    key_moments = key_moments[: mode_decision["limits"]["max_frames"]]
 
     if not key_moments:
         return [
@@ -2325,6 +2403,9 @@ async def get_ocular_audio_video_context(
 
     success_count = sum(1 for item in screenshot_payload if hasattr(item, 'path'))
     result = [
+        f"[CAPABILITY MODE: {mode_decision['resolved_mode']}]",
+        f"[MODE DECISION: {mode_decision['reason']}]",
+        f"[MODE LIMITS: max_evidence={mode_decision['limits']['max_evidence']}, max_frames={mode_decision['limits']['max_frames']}, runtime={mode_decision['limits']['max_runtime_seconds']}s]",
         f"[VIDEO CONTEXT - TRANSCRIPT + VISUALS]",
         f"Detail Level: {detail_level} | Analysis Depth: {normalized_depth} ({success_count} screenshots captured)",
         header,
