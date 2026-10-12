@@ -178,8 +178,9 @@ def build_canonical_evidence(
     if not math.isfinite(duration) or duration < 0:
         duration = 0.0
 
+    chapter_values = list(chapters or [])
     records: dict[str, EvidenceRecord] = {}
-    for segment in build_evidence_segments(transcript or "", duration_seconds=duration, chapters=chapters):
+    for segment in build_evidence_segments(transcript or "", duration_seconds=duration, chapters=chapter_values):
         record = _make_record(
             source_id, "transcript", segment.start_seconds, segment.end_seconds, segment.text,
             locator=f"transcript:{round(segment.start_seconds * 1000)}",
@@ -190,7 +191,7 @@ def build_canonical_evidence(
             records[record.evidence_id] = record
 
     normalized_chapters = []
-    for index, chapter in enumerate(chapters or []):
+    for index, chapter in enumerate(chapter_values):
         fields = _chapter_fields(chapter)
         if not fields:
             continue
