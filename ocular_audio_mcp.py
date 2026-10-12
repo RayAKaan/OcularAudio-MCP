@@ -2547,6 +2547,8 @@ def _refresh_canonical_evidence(cache_id: str, cached: dict | None = None) -> li
     cached = cached if isinstance(cached, dict) else {}
     visual_cache = _read_visual_index(cache_id) or {}
     if not cached and not visual_cache:
+        # Do not let a stale manifest outlive the source artifacts it represents.
+        _get_evidence_store().delete(cache_id)
         return []
     metadata = cached.get("metadata", {}) if isinstance(cached.get("metadata"), dict) else {}
     source_metadata = metadata.get("source", {}) if isinstance(metadata.get("source"), dict) else {}
