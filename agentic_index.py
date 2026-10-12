@@ -136,16 +136,19 @@ def build_execution_plan(
     estimated_duration_seconds: float | None = None,
     available_capabilities: dict[str, Any] | None = None,
     budget_seconds: float | None = None,
+    execution: bool = False,
 ) -> ExecutionPlan:
     query = normalize_query(query)
     requested_policy = (policy or ExecutionPolicy()).validate()
     intent = classify_intent(query, multi_video)
-    requested_features = {
+    requested_features = list({
         "inspect_visual": ("visual",),
         "inspect_ocr": ("ocr", "visual"),
         "search_videos": ("batch",),
         "compare_videos": ("batch",),
-    }.get(intent, ())
+    }.get(intent, ()))
+    if execution:
+        requested_features.append("agentic")
     decision = build_mode_decision(
         mode, query, source_count=source_count,
         estimated_duration_seconds=estimated_duration_seconds,
