@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import json
+import math
 import tempfile
 import time
 import asyncio
@@ -319,6 +320,8 @@ def _get_cache_list() -> list:
 def _clear_cache(video_id: str = None) -> dict:
     """Clear transcript, canonical evidence, visual manifest, and frame artifacts together."""
     if video_id:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", str(video_id)):
+            return {"error": "video_id must be a safe cache identifier.", "cleared": 0}
         cache_file = CACHE_DIR / f"{video_id}.json"
         cleared = int(cache_file.exists())
         cache_file.unlink(missing_ok=True)
