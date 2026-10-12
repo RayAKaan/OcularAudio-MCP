@@ -1713,7 +1713,13 @@ async def run_ocular_audio_analysis(
             query, multi_video=multi_video, policy=policy, mode=mode,
             source_count=source_count, estimated_duration_seconds=estimated_duration_seconds,
             available_capabilities=_check_system_capabilities(), budget_seconds=budget_seconds,
+            execution=True,
         )
+        if not plan.mode_decision["features"]["agentic"]:
+            return json.dumps({
+                "error": f"Mode '{plan.mode_decision['resolved_mode']}' does not allow agentic execution; use intelligence, deep, or auto.",
+                "mode_decision": plan.mode_decision,
+            }, ensure_ascii=False)
         effective_policy = ExecutionPolicy(**plan.to_dict()["policy"]).validate()
         top_k = int(plan.mode_decision["limits"]["max_evidence"])
         resolved_mode = plan.mode_decision["resolved_mode"]
