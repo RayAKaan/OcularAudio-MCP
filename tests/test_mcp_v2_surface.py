@@ -136,6 +136,32 @@ class MCPV2SurfaceTests(unittest.TestCase):
             module.CACHE_DIR = original_cache_dir
             module.VISUAL_CACHE_DIR = original_visual_cache_dir
 
+    def test_stale_manifest_is_removed_when_source_artifacts_disappear(self):
+        module = self.server_module
+        original_cache_dir = module.CACHE_DIR
+        original_visual_cache_dir = module.VISUAL_CACHE_DIR
+        url = "https://example.test/stale-evidence.mp4"
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                module.CACHE_DIR = Path(directory)
+                module.VISUAL_CACHE_DIR = Path(directory) / "visual"
+                module.VISUAL_CACHE_DIR.mkdir(parents=True)
+                cache_id = module._cache_id(url)
+                self.assertTrue(module.write_to_cache(cache_id, {
+                    "metadata": {"title": "Temporary source", "duration": "10s", "chapters": []},
+                    "transcript": "[00:01] Temporary evidence",
+                    "method": "test_fixture",
+                }))
+                self.assertTrue(module._refresh_canonical_evidence(cache_id))
+                self.assertIsNotNone(module._get_evidence_store().read(cache_id))
+
+                (Path(directory) / f"{cache_id}.json").unlink()
+                self.assertEqual([], module._refresh_canonical_evidence(cache_id))
+                self.assertIsNone(module._get_evidence_store().read(cache_id))
+        finally:
+            module.CACHE_DIR = original_cache_dir
+            module.VISUAL_CACHE_DIR = original_visual_cache_dir
+
     def test_visual_search_returns_canonical_visual_and_ocr_ids(self):
         module = self.server_module
         original_cache_dir = module.CACHE_DIR
