@@ -332,14 +332,19 @@ def _clear_cache(video_id: str = None) -> dict:
             cleared += 1
         return {"cleared": cleared, "video_id": video_id, "message": "Source evidence artifacts cleared." if cleared else "Not found in cache"}
     count = 0
-    for directory in (CACHE_DIR, EVIDENCE_STORE_DIR, VISUAL_CACHE_DIR):
+    cache_root = Path(CACHE_DIR)
+    for directory in (cache_root, cache_root / "evidence", cache_root / "visual"):
+        if not directory.exists():
+            continue
         for cache_file in directory.glob("*.json"):
             cache_file.unlink(missing_ok=True)
             count += 1
-    for frame_dir in VISUAL_FRAME_DIR.iterdir():
-        if frame_dir.is_dir():
-            shutil.rmtree(frame_dir, ignore_errors=True)
-            count += 1
+    frame_root = cache_root / "visual" / "frames"
+    if frame_root.exists():
+        for frame_dir in frame_root.iterdir():
+            if frame_dir.is_dir():
+                shutil.rmtree(frame_dir, ignore_errors=True)
+                count += 1
     return {"cleared": count, "message": f"Cleared {count} cached evidence artifacts"}
 
 def get_whisper_engine():
@@ -1253,6 +1258,7 @@ async def index_ocular_audio_video_visuals(
                 and existing.get("ocr_enabled") == effective_ocr
                 and int(existing.get("frame_count", 0)) <= max_frames
             ):
+                _refresh_canonical_evidence(cache_id, read_from_cache(cache_id))
                 return json.dumps(existing, ensure_ascii=False, indent=2)
         timeout = min(NETWORK_TIMEOUT, float(decision["limits"]["max_runtime_seconds"]))
         resolved = await asyncio.wait_for(
@@ -1279,9 +1285,7 @@ async def index_ocular_audio_video_visuals(
             "created_at": time.time(),
         }
         _write_visual_index(cache_id, payload)
-        cached_evidence = read_from_cache(cache_id)
-        if cached_evidence:
-            _refresh_canonical_evidence(cache_id, cached_evidence)
+        _refresh_canonical_evidence(cache_id, read_from_cache(cache_id))
         return json.dumps(payload, ensure_ascii=False, indent=2)
     except asyncio.TimeoutError:
         return json.dumps({"error": "Visual indexing timed out within the selected mode budget."}, ensure_ascii=False)
@@ -1468,7 +1472,9 @@ def _semantic_documents_for_source(
     cache_id = _cache_id(url)
     if cached is None:
         cached = read_from_cache(cache_id)
-    records = _refresh_canonical_evidence(cache_id, cached)
+    _refresh_canonical_evidence(cache_id, cached)
+    manifest = _get_evidence_store().read(cache_id)
+    records = manifest["records"] if manifest else []
     documents: list[SemanticDocument] = []
     for record in records:
         if record.modality not in {"transcript", "ocr"}:
@@ -2488,19 +2494,24 @@ def _get_evidence_store() -> EvidenceStore:
 
 
 def _refresh_canonical_evidence(cache_id: str, cached: dict | None = None) -> list[EvidenceRecord]:
-    """Project legacy transcript and visual caches into the single canonical evidence manifest."""
+    """Synchronize source artifacts into the canonical manifest, including visual-only sources."""
     cached = cached if isinstance(cached, dict) else read_from_cache(cache_id)
-    if not cached:
+    cached = cached if isinstance(cached, dict) else {}
+    visual_cache = _read_visual_index(cache_id) or {}
+    if not cached and not visual_cache:
         return []
     metadata = cached.get("metadata", {}) if isinstance(cached.get("metadata"), dict) else {}
     source_metadata = metadata.get("source", {}) if isinstance(metadata.get("source"), dict) else {}
     duration = _parse_duration_str(str(metadata.get("duration", "0")))
     if not duration:
         try:
-            duration = float(source_metadata.get("duration_seconds") or 0)
+            duration = float(source_metadata.get("duration_seconds") or visual_cache.get("duration_seconds") or 0)
         except (TypeError, ValueError):
             duration = 0
-    visual_cache = _read_visual_index(cache_id) or {}
+    title = str(metadata.get("title") or visual_cache.get("title") or "")
+    source_kind = str(source_metadata.get("source_kind", ""))
+    platform = str(source_metadata.get("platform", ""))
+    media_type = str(source_metadata.get("media_type", ""))
     records = build_canonical_evidence(
         source_id=cache_id,
         transcript=str(cached.get("transcript", "")),
@@ -2508,27 +2519,79 @@ def _refresh_canonical_evidence(cache_id: str, cached: dict | None = None) -> li
         chapters=metadata.get("chapters", []),
         visual_frames=visual_cache.get("frames", []),
         source_metadata={
-            "title": metadata.get("title", ""),
-            "duration": metadata.get("duration", ""),
-            "source_kind": source_metadata.get("source_kind", ""),
-            "platform": source_metadata.get("platform", ""),
-            "media_type": source_metadata.get("media_type", ""),
+            "title": title,
+            "duration": metadata.get("duration", duration),
+            "source_kind": source_kind,
+            "platform": platform,
+            "media_type": media_type,
         },
     )
     _get_evidence_store().save(cache_id, records, {
-        "title": metadata.get("title", ""),
-        "duration": metadata.get("duration", ""),
+        "title": title,
+        "duration": metadata.get("duration", duration),
         "record_count": len(records),
-        "source_kind": source_metadata.get("source_kind", ""),
-        "platform": source_metadata.get("platform", ""),
-        "media_type": source_metadata.get("media_type", ""),
+        "source_kind": source_kind,
+        "platform": platform,
+        "media_type": media_type,
     })
-    return records
+    manifest = _get_evidence_store().read(cache_id)
+    return manifest["records"] if manifest else []
+
+
+@mcp.tool(annotations=tool_annotations("query_ocular_audio_evidence"))
+async def query_ocular_audio_evidence(
+    url: str,
+    modalities: list[str] | None = None,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+    query: str = "",
+    limit: int = 100,
+) -> str:
+    """Query canonical evidence records by modality, timestamp range, and text."""
+    try:
+        if start_seconds is not None and (not math.isfinite(float(start_seconds)) or start_seconds < 0):
+            raise ValueError("start_seconds must be a finite non-negative number.")
+        if end_seconds is not None and (not math.isfinite(float(end_seconds)) or end_seconds < 0):
+            raise ValueError("end_seconds must be a finite non-negative number.")
+        if start_seconds is not None and end_seconds is not None and end_seconds < start_seconds:
+            raise ValueError("end_seconds must be greater than or equal to start_seconds.")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
+            raise ValueError("limit must be an integer between 1 and 1000.")
+        cache_id = _cache_id(url)
+        cached = read_from_cache(cache_id)
+        _refresh_canonical_evidence(cache_id, cached)
+        store = _get_evidence_store()
+        manifest = store.read(cache_id)
+        if not manifest:
+            return json.dumps({
+                "source_id": cache_id, "record_count": 0, "results": [],
+                "message": "No canonical evidence is indexed for this source yet.",
+            }, ensure_ascii=False, indent=2)
+        results = store.query(
+            cache_id, modalities=modalities, start_seconds=start_seconds,
+            end_seconds=end_seconds, text_query=query, limit=limit,
+        )
+        return json.dumps({
+            "source_id": cache_id,
+            "schema_version": manifest["schema_version"],
+            "content_digest": manifest["content_digest"],
+            "record_count": manifest["record_count"],
+            "result_count": len(results),
+            "filters": {
+                "modalities": modalities, "start_seconds": start_seconds,
+                "end_seconds": end_seconds, "query": query.strip(), "limit": limit,
+            },
+            "results": [record.to_dict() for record in results],
+        }, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
 def _canonical_transcript_segments(cache_id: str, cached: dict | None = None) -> list:
-    """Return transcript segments from canonical records with stable evidence IDs."""
-    records = _refresh_canonical_evidence(cache_id, cached)
+    """Read timestamped transcript segments from the canonical persisted manifest."""
+    _refresh_canonical_evidence(cache_id, cached)
+    manifest = _get_evidence_store().read(cache_id)
+    records = manifest["records"] if manifest else []
     from evidence_index import EvidenceSegment
     return [
         EvidenceSegment(
