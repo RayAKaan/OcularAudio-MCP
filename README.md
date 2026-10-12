@@ -13,7 +13,7 @@ OcularAudio lets MCP-compatible AI systems watch, listen to, search, inspect, co
 - **Speech understanding:** timestamped captions with local Whisper fallback when captions are unavailable.
 - **Visual understanding:** intelligent screenshots, exact frames, frame bursts, crops, visual indexing and perceptual similarity.
 - **On-screen text:** optional Tesseract OCR produces searchable visual text evidence.
-- **Evidence search:** timestamp-aware lexical, semantic and hybrid retrieval instead of forcing agents to consume entire media files.
+- **Evidence search:** timestamp-aware lexical, semantic and hybrid retrieval over stable, provenance-preserving canonical evidence records.
 - **Multimodal analysis:** aligns transcript, visual and OCR evidence around the same moments.
 - **Batch intelligence:** process multiple sources, search across them, and generate cross-video comparisons with failure isolation.
 - **Agentic execution:** turn analysis requests into bounded plans with retries, timeouts, audit records and health reporting.
@@ -44,6 +44,10 @@ Research and lecture analysis · product demonstrations · competitor analysis �
 | MCP prompts | Start common investigation workflows |
 | MCP resources | Give hosts operational context |
 | HTTP deployment | Run as a protected network service |
+
+## Canonical evidence architecture
+
+All source artifacts are normalized into one local manifest per source. Evidence records have stable content-derived IDs, modality labels, timestamp bounds, content hashes, provenance pointers, and metadata. Transcript search, timelines, moment inspection, and hybrid retrieval share the same canonical IDs; OCR and visual-frame records are indexed alongside transcript evidence. Manifests are written atomically, validated on read, deduplicated by ID, and refreshed from the existing transcript and visual caches without requiring a migration or a database. Clearing a source removes its transcript, canonical manifest, visual index, and frame artifacts together. Manifest metadata intentionally stores a bounded summary rather than the source URL or credentials.
 
 ## Four-level intelligence engine
 
@@ -120,6 +124,7 @@ Codex CLI:
 ### Core modules
 - media_resolver.py + universal_sources.py: source classification, platform families, streams, local media and analysis policy.
 - evidence_index.py: timestamped evidence segmentation, chapter association and deterministic retrieval.
+- evidence_store.py: canonical transcript/chapter/metadata/visual/OCR records, stable evidence IDs, provenance, integrity-checked manifests, atomic persistence and lifecycle cleanup.
 - visual_index.py: frame sampling, bursts, crops, perceptual hashes, descriptors and OCR evidence.
 - semantic_index.py: local TF-IDF/lexical/semantic and hybrid retrieval.
 - multimodal_index.py: transcript/visual/OCR timestamp alignment and ranking.
