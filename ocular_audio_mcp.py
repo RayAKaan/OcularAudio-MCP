@@ -2926,8 +2926,11 @@ if __name__ == "__main__":
             try:
                 budget_seconds = float(sys.argv[idx + 1])
             except (IndexError, ValueError):
-                print(json.dumps({"error": "--budget-seconds must be a finite number between 0.001 and 900."}))
-                return
+                print("--budget-seconds must be a finite number between 0.001 and 900.", file=sys.stderr)
+                sys.exit(1)
+            if not 0.001 <= budget_seconds <= 900:
+                print("--budget-seconds must be a finite number between 0.001 and 900.", file=sys.stderr)
+                sys.exit(1)
         force_mode = "--force" in sys.argv
         verbose_mode = "--verbose" in sys.argv
         quiet_mode = "--quiet" in sys.argv
