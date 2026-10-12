@@ -137,8 +137,8 @@ Codex CLI:
 
 ## MCP surface
 
-### 32 tools
-Media/evidence: get_ocular_audio_transcript, get_ocular_audio_video_context, search_ocular_audio_video, get_ocular_audio_video_timeline, inspect_ocular_audio_moment, get_ocular_audio_metadata, get_ocular_audio_chapters, inspect_ocular_audio_source, get_ocular_audio_capabilities.
+### 33 tools
+Media/evidence: get_ocular_audio_transcript, get_ocular_audio_video_context, search_ocular_audio_video, get_ocular_audio_video_timeline, inspect_ocular_audio_moment, query_ocular_audio_evidence, get_ocular_audio_metadata, get_ocular_audio_chapters, inspect_ocular_audio_source, get_ocular_audio_capabilities.
 
 Visual/OCR: get_ocular_audio_video_screenshots, index_ocular_audio_video_visuals, search_ocular_audio_visuals, get_ocular_audio_video_frame, get_ocular_audio_video_frame_burst, crop_ocular_audio_video_frame.
 
