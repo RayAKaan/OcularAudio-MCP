@@ -136,6 +136,40 @@ class MCPV2SurfaceTests(unittest.TestCase):
             module.CACHE_DIR = original_cache_dir
             module.VISUAL_CACHE_DIR = original_visual_cache_dir
 
+    def test_visual_search_returns_canonical_visual_and_ocr_ids(self):
+        module = self.server_module
+        original_cache_dir = module.CACHE_DIR
+        original_visual_cache_dir = module.VISUAL_CACHE_DIR
+        url = "https://example.test/visual-search.mp4"
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                module.CACHE_DIR = Path(directory)
+                module.VISUAL_CACHE_DIR = Path(directory) / "visual"
+                module.VISUAL_CACHE_DIR.mkdir(parents=True)
+                cache_id = module._cache_id(url)
+                module._write_visual_index(cache_id, {
+                    "version": module.VISUAL_INDEX_VERSION,
+                    "source_id": cache_id, "title": "Revenue slide", "duration_seconds": 12,
+                    "frames": [{
+                        "frame_id": "frame-revenue", "timestamp_seconds": 4,
+                        "image_path": "/tmp/frame.jpg", "width": 640, "height": 360,
+                        "brightness": 100, "contrast": 25, "phash": "10101010",
+                        "ocr_text": "Revenue increased 42 percent",
+                    }],
+                })
+                payload = json.loads(asyncio.run(module.search_ocular_audio_visuals(
+                    url, "revenue", mode="deep",
+                )))
+                self.assertNotIn("error", payload)
+                self.assertEqual(1, payload["result_count"])
+                result = payload["results"][0]
+                self.assertTrue(result["evidence_id"].startswith("ev_"))
+                self.assertTrue(result["ocr_evidence_id"].startswith("ev_"))
+                self.assertEqual("frame-revenue", result["provenance"]["frame_id"])
+        finally:
+            module.CACHE_DIR = original_cache_dir
+            module.VISUAL_CACHE_DIR = original_visual_cache_dir
+
     def test_registered_tools_and_resources(self):
         from mcp import Client
 
