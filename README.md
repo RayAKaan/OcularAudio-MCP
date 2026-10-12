@@ -58,7 +58,7 @@ Every request is resolved through one deterministic policy engine. Auto resolves
 
 Modes enforce evidence caps, frame limits, source limits, retry counts, concurrency, sampling intervals, and runtime ceilings. Missing OpenCV, FFmpeg, or Tesseract is reported as a capability gap; optional unavailable features are disabled rather than represented as successful. Explicit source-limit violations fail with a clear error instead of silently dropping sources. Source coverage remains shared across modes.
 
-The CLI's existing --mode flag now reaches the Python runtime. MCP planning, agentic execution, hybrid search, visual indexing, multimodal analysis, and batch analysis expose the same decision contract. Use --mode deep for comprehensive evidence or --mode lite for a fast overview.
+The CLI's existing --mode flag now reaches the Python runtime. Use --budget-seconds to impose a caller-specified runtime ceiling (0.001-900 seconds). MCP planning, agentic execution, hybrid search, visual indexing, multimodal analysis, and batch analysis expose the same decision contract. Use --mode deep for comprehensive evidence or --mode lite for a fast overview.
 
 ## Quick start
 
