@@ -1272,27 +1272,33 @@ async def index_ocular_audio_video_visuals(
 async def search_ocular_audio_visuals(
     url: str,
     query: str,
-    top_k: int = 8,
+    top_k: int | None = None,
     min_score: float = 0.0,
+    mode: str = "auto",
 ) -> str:
-    """Search indexed visual evidence using OCR text and return ranked frames."""
-    cache_id = _cache_id(url)
-    index = _read_visual_index(cache_id)
-    if not index:
+    """Search indexed visual evidence under the selected evidence budget."""
+    try:
+        controls = mode_execution_controls(mode, query, top_k=top_k, requested_features=("visual",))
+        decision = controls["decision"]
+        if not decision["features"]["visual"]:
+            return json.dumps({"error": "Visual retrieval is unavailable in this mode or runtime.", "mode_decision": decision}, ensure_ascii=False)
+        cache_id = _cache_id(url)
+        index = _read_visual_index(cache_id)
+        if not index:
+            return json.dumps({
+                "error": "No visual index found.", "source_id": cache_id,
+                "suggestion": "Run index_ocular_audio_video_visuals first.",
+                "mode_decision": decision,
+            }, ensure_ascii=False)
+        frames = frames_from_payload(index.get("frames", []))
+        results = search_visual_frames(frames, query, top_k=controls["top_k"], min_score=min_score)
         return json.dumps({
-            "error": "No visual index found.",
-            "source_id": cache_id,
-            "suggestion": "Run index_ocular_audio_video_visuals first.",
-        }, ensure_ascii=False)
-    frames = frames_from_payload(index.get("frames", []))
-    results = search_visual_frames(frames, query, top_k=top_k, min_score=min_score)
-    return json.dumps({
-        "source_id": cache_id,
-        "url": url,
-        "query": query.strip(),
-        "result_count": len(results),
-        "results": [item.to_dict() for item in results],
-    }, ensure_ascii=False, indent=2)
+            "source_id": cache_id, "url": url, "query": query.strip(),
+            "mode_decision": decision, "result_count": len(results),
+            "results": [item.to_dict() for item in results],
+        }, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
 @mcp.tool(annotations=tool_annotations("get_ocular_audio_video_frame"))
@@ -1709,13 +1715,13 @@ async def run_ocular_audio_analysis(
                 timestamp = float((payload.get("results") or [{}])[0].get("start_seconds", 0))
                 worker = lambda: inspect_ocular_audio_moment(url=url, timestamp_seconds=timestamp)
             elif step.operation == "search_visual":
-                worker = lambda: search_ocular_audio_visuals(url=url, query=query, top_k=top_k)
+                worker = lambda: search_ocular_audio_visuals(url=url, query=query, top_k=top_k, mode=resolved_mode)
             elif step.operation == "timeline":
                 worker = lambda: get_ocular_audio_video_timeline(url=url)
             elif step.operation == "search_batch":
-                worker = lambda: search_ocular_audio_videos(sources_json=url, query=query, top_k=top_k)
+                worker = lambda: search_ocular_audio_videos(sources_json=url, query=query, top_k=top_k, mode=resolved_mode)
             elif step.operation == "compare_batch":
-                worker = lambda: compare_ocular_audio_videos(sources_json=url, query=query)
+                worker = lambda: compare_ocular_audio_videos(sources_json=url, query=query, mode=resolved_mode)
             else:
                 raise ValueError(f"Unsupported plan operation: {step.operation}")
             result, audit = await execute_with_policy(step.operation, worker, effective_policy)
@@ -1812,36 +1818,38 @@ async def analyze_ocular_audio_batch(
 async def search_ocular_audio_videos(
     sources_json: str,
     query: str,
-    top_k: int = 12,
-    interval_seconds: float = 10,
+    top_k: int | None = None,
+    interval_seconds: float | None = None,
     window_seconds: float = 5,
-    enable_ocr: bool = True,
+    enable_ocr: bool | None = None,
     use_local_whisper: bool = True,
-    max_concurrency: int = 2,
+    max_concurrency: int | None = None,
+    mode: str = "auto",
 ) -> str:
-    """Search multimodal evidence across multiple videos with one unified ranking."""
+    """Search multimodal evidence across multiple videos under one mode policy."""
     return await analyze_ocular_audio_batch(
         manifest_json=sources_json, query=query, interval_seconds=interval_seconds,
         window_seconds=window_seconds, top_k=top_k, enable_ocr=enable_ocr,
-        use_local_whisper=use_local_whisper, max_concurrency=max_concurrency)
+        use_local_whisper=use_local_whisper, max_concurrency=max_concurrency, mode=mode)
 
 
 @mcp.tool(annotations=tool_annotations("compare_ocular_audio_videos"))
 async def compare_ocular_audio_videos(
     sources_json: str,
     query: str = "",
-    interval_seconds: float = 10,
+    interval_seconds: float | None = None,
     window_seconds: float = 5,
-    enable_ocr: bool = True,
+    enable_ocr: bool | None = None,
     use_local_whisper: bool = True,
-    max_concurrency: int = 2,
+    max_concurrency: int | None = None,
+    mode: str = "auto",
 ) -> str:
-    """Build a comparable per-video scorecard for the same multimodal query."""
+    """Build a comparable per-video scorecard under the selected mode budget."""
     try:
         batch_payload = json.loads(await analyze_ocular_audio_batch(
             manifest_json=sources_json, query=query, interval_seconds=interval_seconds,
-            window_seconds=window_seconds, top_k=50, enable_ocr=enable_ocr,
-            use_local_whisper=use_local_whisper, max_concurrency=max_concurrency))
+            window_seconds=window_seconds, top_k=None, enable_ocr=enable_ocr,
+            use_local_whisper=use_local_whisper, max_concurrency=max_concurrency, mode=mode))
         if batch_payload.get("error"):
             return json.dumps(batch_payload, ensure_ascii=False, indent=2)
         items = []
@@ -1857,6 +1865,7 @@ async def compare_ocular_audio_videos(
                 result=item.get("result"), error=str(item.get("error", ""))))
         return json.dumps({
             "batch_id": batch_payload.get("batch_id"), "query": query.strip(),
+            "mode_decision": batch_payload.get("mode_decision"),
             "comparison": compare_batch_results(items, query),
         }, ensure_ascii=False, indent=2)
     except Exception as exc:
