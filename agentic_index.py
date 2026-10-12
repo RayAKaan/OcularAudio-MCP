@@ -176,9 +176,16 @@ def build_execution_plan(
     }
     raw_steps = list(operations[intent])
     adjustments = list(decision["adjustments"])
-    if decision["resolved_mode"] == "lite" and intent in {"inspect_visual", "inspect_ocr"}:
-        raw_steps = [("search_hybrid", "Lite mode falls back to transcript evidence instead of expensive visual/OCR processing.")]
-        adjustments.append(f"{intent} was downgraded to transcript retrieval by Lite mode.")
+    if intent in {"inspect_visual", "inspect_ocr"} and (
+        decision["resolved_mode"] == "lite" or not decision["features"]["visual"]
+    ):
+        reason = (
+            "Lite mode falls back to transcript evidence instead of expensive visual/OCR processing."
+            if decision["resolved_mode"] == "lite"
+            else "Visual dependencies are unavailable; fall back to transcript evidence."
+        )
+        raw_steps = [("search_hybrid", reason)]
+        adjustments.append(f"{intent} was downgraded to transcript retrieval by the selected mode/runtime.")
     if decision["resolved_mode"] == "lite" and intent in {"search_videos", "compare_videos"}:
         raise ValueError("Lite mode does not support multi-source analysis; choose intelligence, deep, or auto.")
     if decision["resolved_mode"] in {"intelligence", "deep"}:
