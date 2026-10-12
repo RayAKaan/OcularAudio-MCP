@@ -39,11 +39,26 @@ Research and lecture analysis · product demonstrations · competitor analysis �
 | Batch analysis | Investigate collections of videos |
 | Cross-video comparison | Compare evidence across sources |
 | Agentic workflows | Execute bounded evidence investigations |
-| Capability modes | Trade speed for analysis depth |
+| Capability modes | Auto-select or enforce Lite, Intelligence, and Deep execution budgets |
 | Cache | Make repeated analysis faster |
 | MCP prompts | Start common investigation workflows |
 | MCP resources | Give hosts operational context |
 | HTTP deployment | Run as a protected network service |
+
+## Four-level intelligence engine
+
+Every request is resolved through one deterministic policy engine. Auto resolves to Lite, Intelligence, or Deep based on query intent, requested features, source count, media duration, and an optional time budget. The decision is returned as machine-readable metadata with explicit limits, disabled features, capability gaps, and adjustments.
+
+| Mode | Evidence | Visual frames | Default sampling | Runtime ceiling | Sources | Behavior |
+|---|---:|---:|---:|---:|---:|---|
+| Lite | 8 | 8 | 30 s | 45 s | 1 | Transcript/metadata first; OCR, multimodal and batch are disabled |
+| Intelligence | 24 | 24 | 10 s | 180 s | 10 | Balanced retrieval, visual/OCR and multimodal analysis |
+| Deep | 64 | 64 | 3 s | 600 s | 32 | Expanded evidence and multi-step investigation |
+| Auto | Policy-selected | Policy-selected | Policy-selected | Policy-selected | Policy-selected | Resolves to one of the three execution modes |
+
+Modes enforce evidence caps, frame limits, source limits, retry counts, concurrency, sampling intervals, and runtime ceilings. Missing OpenCV, FFmpeg, or Tesseract is reported as a capability gap; optional unavailable features are disabled rather than represented as successful. Explicit source-limit violations fail with a clear error instead of silently dropping sources. Source coverage remains shared across modes.
+
+The CLI's existing --mode flag now reaches the Python runtime. MCP planning, agentic execution, hybrid search, visual indexing, multimodal analysis, and batch analysis expose the same decision contract. Use --mode deep for comprehensive evidence or --mode lite for a fast overview.
 
 ## Quick start
 
