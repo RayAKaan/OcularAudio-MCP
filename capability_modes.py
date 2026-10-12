@@ -121,6 +121,8 @@ def _auto_mode(
         return "deep", "The source count exceeds the balanced-mode limit."
     if source_count > 1 or multi_video or "batch" in features:
         return "intelligence", "Multi-source work requires batch-capable analysis."
+    if "agentic" in features:
+        return "intelligence", "Agentic execution requires a mode with bounded orchestration enabled."
     if budget_seconds is not None and budget_seconds <= MODE_POLICIES["lite"].max_runtime_seconds:
         if features & {"ocr", "visual", "multimodal", "batch"}:
             return "intelligence", "The requested evidence features require more than Lite mode."
