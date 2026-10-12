@@ -2247,6 +2247,13 @@ async def get_ocular_audio_video_context(
         detail_level = "deep"
         enable_ocr = mode_decision["features"]["ocr"]
 
+    # Capability mode is the hard execution boundary; legacy depth aliases may
+    # request more detail but must never bypass the selected mode's limits.
+    if mode_decision["resolved_mode"] == "lite" or not mode_decision["features"]["visual"]:
+        detail_level = "overview"
+    if not mode_decision["features"]["ocr"]:
+        enable_ocr = False
+
     video_id = extract_video_id(url)
     is_youtube = bool(video_id)
     cache_id = _cache_id(url)
