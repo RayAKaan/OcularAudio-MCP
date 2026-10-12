@@ -76,6 +76,66 @@ class MCPV2SurfaceTests(unittest.TestCase):
         finally:
             module.CACHE_DIR = original_cache_dir
 
+    def test_query_canonical_evidence_tool_filters_and_returns_provenance(self):
+        module = self.server_module
+        original_cache_dir = module.CACHE_DIR
+        original_visual_cache_dir = module.VISUAL_CACHE_DIR
+        url = "https://example.test/canonical-query.mp4"
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                module.CACHE_DIR = Path(directory)
+                module.VISUAL_CACHE_DIR = Path(directory) / "visual"
+                module.VISUAL_CACHE_DIR.mkdir(parents=True)
+                cache_id = module._cache_id(url)
+                self.assertTrue(module.write_to_cache(cache_id, {
+                    "metadata": {"title": "Canonical query", "duration": "30s", "chapters": []},
+                    "transcript": "[00:02] Revenue increased this quarter.\\n[00:12] Costs remained stable.",
+                    "method": "test_fixture",
+                }))
+                payload = json.loads(asyncio.run(module.query_ocular_audio_evidence(
+                    url, modalities=["transcript"], query="revenue", limit=10,
+                )))
+                self.assertNotIn("error", payload)
+                self.assertGreater(payload["result_count"], 0)
+                self.assertTrue(all(item["modality"] == "transcript" for item in payload["results"]))
+                self.assertTrue(all(item["evidence_id"].startswith("ev_") for item in payload["results"]))
+                self.assertTrue(all(item["content_hash"] for item in payload["results"]))
+                self.assertTrue(all("provenance" in item for item in payload["results"]))
+        finally:
+            module.CACHE_DIR = original_cache_dir
+            module.VISUAL_CACHE_DIR = original_visual_cache_dir
+
+    def test_visual_only_source_is_persisted_in_canonical_manifest(self):
+        module = self.server_module
+        original_cache_dir = module.CACHE_DIR
+        original_visual_cache_dir = module.VISUAL_CACHE_DIR
+        url = "https://example.test/visual-only.mp4"
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                module.CACHE_DIR = Path(directory)
+                module.VISUAL_CACHE_DIR = Path(directory) / "visual"
+                module.VISUAL_CACHE_DIR.mkdir(parents=True)
+                cache_id = module._cache_id(url)
+                module._write_visual_index(cache_id, {
+                    "source_id": cache_id, "title": "Visual only", "duration_seconds": 12,
+                    "frames": [{
+                        "frame_id": "frame-1", "timestamp_seconds": 4,
+                        "description": "A dashboard slide", "ocr_text": "Revenue 42",
+                        "image_path": "/tmp/frame.jpg",
+                    }],
+                })
+                records = module._refresh_canonical_evidence(cache_id)
+                self.assertTrue(records)
+                manifest = module._get_evidence_store().read(cache_id)
+                self.assertIsNotNone(manifest)
+                modalities = {record.modality for record in manifest["records"]}
+                self.assertIn("visual", modalities)
+                self.assertIn("ocr", modalities)
+                self.assertNotIn("transcript", modalities)
+        finally:
+            module.CACHE_DIR = original_cache_dir
+            module.VISUAL_CACHE_DIR = original_visual_cache_dir
+
     def test_registered_tools_and_resources(self):
         from mcp import Client
 
@@ -89,7 +149,8 @@ class MCPV2SurfaceTests(unittest.TestCase):
                 prompt_names = {prompt.name for prompt in prompts.prompts}
 
                 self.assertIn("get_ocular_audio_contract", tool_names)
-                self.assertEqual(32, len(tool_names))
+                self.assertIn("query_ocular_audio_evidence", tool_names)
+                self.assertEqual(33, len(tool_names))
                 self.assertEqual(
                     {
                         "ocularaudio://capabilities",
