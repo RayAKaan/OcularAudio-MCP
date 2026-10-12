@@ -2915,8 +2915,7 @@ if __name__ == "__main__":
 
             if visual_search_query is not None:
                 print(await search_ocular_audio_visuals(
-                    url=target_url,
-                    query=visual_search_query,
+                    url=target_url, query=visual_search_query, mode=resolved_capability_mode,
                 ))
                 return
 
@@ -2974,10 +2973,8 @@ if __name__ == "__main__":
                     return
                 if batch_compare_mode:
                     print(await compare_ocular_audio_videos(
-                        sources_json=manifest_text,
-                        query="",
-                        enable_ocr=enable_ocr,
-                        use_local_whisper=True,
+                        sources_json=manifest_text, query="", enable_ocr=enable_ocr,
+                        use_local_whisper=True, mode=resolved_capability_mode,
                     ))
                 else:
                     print(await analyze_ocular_audio_batch(
