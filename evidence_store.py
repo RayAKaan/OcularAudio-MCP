@@ -181,6 +181,8 @@ def build_canonical_evidence(
     chapter_values = list(chapters or [])
     records: dict[str, EvidenceRecord] = {}
     for segment in build_evidence_segments(transcript or "", duration_seconds=duration, chapters=chapter_values):
+        if duration and segment.start_seconds > duration:
+            continue
         record = _make_record(
             source_id, "transcript", segment.start_seconds, segment.end_seconds, segment.text,
             locator=f"transcript:{round(segment.start_seconds * 1000)}",
@@ -236,7 +238,7 @@ def build_canonical_evidence(
         visual_text = str(frame.get("description", "")).strip() or f"Visual frame at {timestamp:g} seconds"
         visual = _make_record(
             source_id, "visual", timestamp, timestamp, visual_text,
-            locator=frame_id,
+            locator=frame_id + ":" + str(frame.get("phash", "")),
             provenance={"artifact": "visual_index", "frame_id": frame_id},
             metadata=frame_metadata,
         )
