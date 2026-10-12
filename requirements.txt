@@ -5,3 +5,4 @@ opencv-python-headless>=4.8.0
 faster-whisper>=1.0.0
 requests>=2.28.0
 pytesseract>=0.3.10
+av==18.0.0

@@ -13,10 +13,10 @@ try {
   chalk = require('chalk');
 } catch {
   // Fallback: no colors
-  chalk = new Proxy({}, {
-    get: () => new Proxy({}, {
-      get: () => (s) => s
-    })
+  const colorize = (value) => String(value);
+  chalk = new Proxy(colorize, {
+    get: () => colorize,
+    apply: (_target, _thisArg, args) => colorize(args[0])
   });
 }
 
@@ -480,6 +480,11 @@ if (checkMode) {
 // ── Validate URL ────────────────────────────────────────────────────────────
 if (!targetUrl && batchManifestFile) targetUrl = batchManifestFile;
 if (!targetUrl && (healthMode || auditMode || planQuery !== null || agenticQuery !== null)) targetUrl = "local";
+// A bare invocation is the standard MCP-host entry point. Keep explicit
+// analysis options strict so a missing media URL is not silently ignored.
+if (!targetUrl && !transportMode && args.length === 0) {
+  transportMode = 'stdio';
+}
 if (transportMode) targetUrl = null;
 
 if (!targetUrl && !transportMode) {
@@ -489,11 +494,13 @@ if (!targetUrl && !transportMode) {
   process.exit(1);
 }
 
-const localSource = fs.existsSync(targetUrl) && fs.statSync(targetUrl).isFile();
-if (!localSource && !/^(?:https?|rtmp(?:s|e|t|ts)?|rtsp|srt|udp):\/\//i.test(targetUrl)) {
-  console.error(chalk.red('[ERROR] Invalid media source.'));
-  console.error(chalk.gray('Provide an http(s), media-stream, or an existing local media file.'));
-  process.exit(1);
+if (!transportMode && targetUrl !== "local") {
+  const localSource = targetUrl && fs.existsSync(targetUrl) && fs.statSync(targetUrl).isFile();
+  if (!localSource && !/^(?:https?|rtmp(?:s|e|t|ts)?|rtsp|srt|udp):\/\//i.test(targetUrl || "")) {
+    console.error(chalk.red('[ERROR] Invalid media source.'));
+    console.error(chalk.gray('Provide an http(s), media-stream, or an existing local media file.'));
+    process.exit(1);
+  }
 }
 
 // ── Build Python arguments ──────────────────────────────────────────────────
@@ -531,7 +538,7 @@ if (outputFile) {
 }
 
 // ── Print header ────────────────────────────────────────────────────────────
-if (transportMode) {
+if (transportMode && transportMode !== 'stdio') {
   console.log(chalk.cyan(`[INFO] OcularAudio MCP v${VERSION}`));
   console.log(chalk.gray(`[INFO] Transport: ${transportMode}`));
   if (transportMode === 'streamable-http') console.log(chalk.gray(`[INFO] Endpoint: http://${transportHost}:${transportPort}/mcp`));
@@ -551,14 +558,17 @@ if (!transportMode && !stdoutMode && !jsonMode && !quietMode) {
 // ── Spawn Python process ────────────────────────────────────────────────────
 const { spawn } = require('child_process');
 
+const isStdioMcp = transportMode === 'stdio';
 const pythonProcess = spawn(pythonCmd, pyArgs, {
-  stdio: ['ignore', 'pipe', 'pipe'],
+  // MCP stdio must be a transparent byte stream: do not buffer, decorate, or
+  // consume the host's stdin/stdout, and never apply the CLI's job timeout.
+  stdio: isStdioMcp ? 'inherit' : ['ignore', 'pipe', 'pipe'],
   windowsHide: true,
 });
 
-// 5-minute timeout
+// Media-processing commands are bounded; an MCP server is intentionally long-lived.
 const SPAWN_TIMEOUT_MS = 5 * 60 * 1000;
-const timeoutId = setTimeout(() => {
+const timeoutId = isStdioMcp ? null : setTimeout(() => {
   console.error(`[ERROR] Process timed out after ${SPAWN_TIMEOUT_MS / 1000}s. Killing...`);
   pythonProcess.kill('SIGTERM');
   process.exit(1);
@@ -567,26 +577,25 @@ const timeoutId = setTimeout(() => {
 let stdout = '';
 let stderr = '';
 
-pythonProcess.stdout.on('data', (data) => {
-  stdout += data.toString();
-});
+if (!isStdioMcp) {
+  pythonProcess.stdout.on('data', (data) => {
+    stdout += data.toString();
+  });
 
-// Stream stderr as real-time progress indicators
-pythonProcess.stderr.on('data', (data) => {
-  const line = data.toString().trim();
-  if (line && !stdoutMode) {
-    // Show Python [INFO] messages as progress (only in non-quiet modes)
-    if (verboseMode) {
-      // In verbose mode, show all progress messages
-      process.stderr.write(`  ${line}\n`);
-    } else if (line.includes('PROGRESS:')) {
-      // Always show PROGRESS messages (stripped of the PROGRESS: prefix)
-      const cleanLine = line.replace(/\[.*?\]\s*PROGRESS:\s*/, '  ');
-      process.stderr.write(`  ${cleanLine}\n`);
+  // Stream stderr as real-time progress indicators for standalone CLI operations.
+  pythonProcess.stderr.on('data', (data) => {
+    const line = data.toString().trim();
+    if (line && !stdoutMode) {
+      if (verboseMode) {
+        process.stderr.write(`  ${line}\n`);
+      } else if (line.includes('PROGRESS:')) {
+        const cleanLine = line.replace(/\[.*?\]\s*PROGRESS:\s*/, '  ');
+        process.stderr.write(`  ${cleanLine}\n`);
+      }
     }
-  }
-  stderr += data.toString();
-});
+    stderr += data.toString();
+  });
+}
 
 pythonProcess.on('error', (error) => {
   clearTimeout(timeoutId);
@@ -604,7 +613,14 @@ pythonProcess.on('error', (error) => {
 });
 
 pythonProcess.on('close', async (code) => {
-  clearTimeout(timeoutId);
+  if (timeoutId) clearTimeout(timeoutId);
+
+  // In stdio MCP mode, protocol bytes were forwarded directly. Do not
+  // buffer/reprint output or apply standalone CLI result formatting.
+  if (isStdioMcp) {
+    if (code !== 0) process.exitCode = code || 1;
+    return;
+  }
 
   if (code !== 0) {
     console.error(chalk.red(`\n[ERROR] Python process exited with code ${code}`));

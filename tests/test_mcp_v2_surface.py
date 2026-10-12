@@ -1,7 +1,10 @@
 import asyncio
+import json
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 
 
 def _install_lightweight_stubs():
@@ -28,6 +31,35 @@ class MCPV2SurfaceTests(unittest.TestCase):
     def test_server_identity(self):
         self.assertEqual("OcularAudio Server", self.server_module.mcp.name)
         self.assertEqual("1.3.0", self.server_module.mcp.version)
+
+    def test_hybrid_search_reads_canonical_transcript_cache(self):
+        module = self.server_module
+        original_cache_dir = module.CACHE_DIR
+        url = "https://example.test/pricing-demo.mp4"
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                module.CACHE_DIR = Path(directory)
+                cache_id = module._cache_id(url)
+                self.assertTrue(module.write_to_cache(cache_id, {
+                    "metadata": {
+                        "title": "Pricing demo",
+                        "duration": "30s",
+                        "chapters": [],
+                    },
+                    "transcript": (
+                        "[00:00] The pricing plans include a starter tier.\n"
+                        "[00:10] Enterprise customers receive advanced reporting."
+                    ),
+                    "method": "test_fixture",
+                }))
+
+                result = asyncio.run(module.search_ocular_audio_hybrid(url, "pricing plans"))
+                payload = json.loads(result)
+                self.assertNotIn("error", payload)
+                self.assertGreater(payload["result_count"], 0)
+                self.assertIn("pricing", payload["results"][0]["text"].lower())
+        finally:
+            module.CACHE_DIR = original_cache_dir
 
     def test_registered_tools_and_resources(self):
         from mcp import Client
