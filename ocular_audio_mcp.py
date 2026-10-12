@@ -1210,12 +1210,14 @@ async def index_ocular_audio_video_visuals(
     enable_ocr: bool | None = None,
     force: bool = False,
     mode: str = "auto",
+    budget_seconds: float | None = None,
 ) -> str:
     """Build a persistent visual evidence index under a mode-specific sampling budget."""
     try:
         controls = mode_execution_controls(
             mode, requested_features=("visual",), interval_seconds=interval_seconds,
-            enable_ocr=enable_ocr, available_capabilities=_check_system_capabilities(),
+            enable_ocr=enable_ocr, budget_seconds=budget_seconds,
+            available_capabilities=_check_system_capabilities(),
         )
         decision = controls["decision"]
         if not decision["features"]["visual"]:
@@ -1275,10 +1277,13 @@ async def search_ocular_audio_visuals(
     top_k: int | None = None,
     min_score: float = 0.0,
     mode: str = "auto",
+    budget_seconds: float | None = None,
 ) -> str:
     """Search indexed visual evidence under the selected evidence budget."""
     try:
-        controls = mode_execution_controls(mode, query, top_k=top_k, requested_features=("visual",))
+        controls = mode_execution_controls(
+            mode, query, top_k=top_k, budget_seconds=budget_seconds, requested_features=("visual",),
+        )
         decision = controls["decision"]
         if not decision["features"]["visual"]:
             return json.dumps({"error": "Visual retrieval is unavailable in this mode or runtime.", "mode_decision": decision}, ensure_ascii=False)
@@ -1493,14 +1498,21 @@ async def search_ocular_audio_hybrid(
     top_k: int | None = None,
     semantic_weight: float = 0.65,
     mode: str = "auto",
+    budget_seconds: float | None = None,
 ) -> str:
     """Search transcript and visual OCR evidence under a bounded capability policy."""
     try:
-        controls = mode_execution_controls(mode, query, top_k=top_k, requested_features=("retrieval",))
-        cache_id, cached = await _ensure_evidence_cache(url)
-        documents = await asyncio.to_thread(_semantic_documents_for_source, url, cached)
-        results = await asyncio.to_thread(
-            hybrid_search, documents, query, controls["top_k"], semantic_weight,
+        controls = mode_execution_controls(
+            mode, query, top_k=top_k, budget_seconds=budget_seconds, requested_features=("retrieval",),
+        )
+        timeout = min(NETWORK_TIMEOUT, float(controls["decision"]["limits"]["max_runtime_seconds"]))
+        cache_id, cached = await asyncio.wait_for(_ensure_evidence_cache(url), timeout=timeout)
+        documents = await asyncio.wait_for(
+            asyncio.to_thread(_semantic_documents_for_source, url, cached), timeout=timeout,
+        )
+        results = await asyncio.wait_for(
+            asyncio.to_thread(hybrid_search, documents, query, controls["top_k"], semantic_weight),
+            timeout=timeout,
         )
         return json.dumps({
             "source_id": cache_id, "query": query.strip(),
@@ -1525,13 +1537,14 @@ async def analyze_ocular_audio_multimodal(
     use_local_whisper: bool = True,
     force: bool = False,
     mode: str = "auto",
+    budget_seconds: float | None = None,
 ) -> str:
     """Build and rank unified evidence moments under a bounded mode policy."""
     try:
         controls = mode_execution_controls(
             mode, query, interval_seconds=interval_seconds, top_k=top_k,
-            enable_ocr=enable_ocr, requested_features=("multimodal",),
-            available_capabilities=_check_system_capabilities(),
+            enable_ocr=enable_ocr, budget_seconds=budget_seconds,
+            requested_features=("multimodal",), available_capabilities=_check_system_capabilities(),
         )
         decision = controls["decision"]
         if not decision["features"]["multimodal"]:
@@ -1749,6 +1762,7 @@ async def analyze_ocular_audio_batch(
     max_concurrency: int | None = None,
     force: bool = False,
     mode: str = "auto",
+    budget_seconds: float | None = None,
 ) -> str:
     """Analyze a bounded source collection using the selected capability mode."""
     try:
@@ -1758,7 +1772,8 @@ async def analyze_ocular_audio_batch(
         controls = mode_execution_controls(
             mode, query, interval_seconds=interval_seconds, top_k=top_k,
             enable_ocr=enable_ocr, max_concurrency=max_concurrency,
-            source_count=len(sources), requested_features=("batch", "multimodal"),
+            source_count=len(sources), budget_seconds=budget_seconds,
+            requested_features=("batch", "multimodal"),
             available_capabilities=_check_system_capabilities(), multi_video=len(sources) > 1,
         )
         decision = controls["decision"]
@@ -1789,6 +1804,7 @@ async def analyze_ocular_audio_batch(
                 window_seconds=window_seconds, top_k=effective_top_k,
                 enable_ocr=effective_ocr, use_local_whisper=use_local_whisper,
                 force=force, mode=decision["resolved_mode"],
+                budget_seconds=decision["limits"]["max_runtime_seconds"],
             )
             payload = json.loads(raw)
             if payload.get("error"):
@@ -1825,12 +1841,14 @@ async def search_ocular_audio_videos(
     use_local_whisper: bool = True,
     max_concurrency: int | None = None,
     mode: str = "auto",
+    budget_seconds: float | None = None,
 ) -> str:
     """Search multimodal evidence across multiple videos under one mode policy."""
     return await analyze_ocular_audio_batch(
         manifest_json=sources_json, query=query, interval_seconds=interval_seconds,
         window_seconds=window_seconds, top_k=top_k, enable_ocr=enable_ocr,
-        use_local_whisper=use_local_whisper, max_concurrency=max_concurrency, mode=mode)
+        use_local_whisper=use_local_whisper, max_concurrency=max_concurrency,
+        mode=mode, budget_seconds=budget_seconds)
 
 
 @mcp.tool(annotations=tool_annotations("compare_ocular_audio_videos"))
@@ -1843,13 +1861,15 @@ async def compare_ocular_audio_videos(
     use_local_whisper: bool = True,
     max_concurrency: int | None = None,
     mode: str = "auto",
+    budget_seconds: float | None = None,
 ) -> str:
     """Build a comparable per-video scorecard under the selected mode budget."""
     try:
         batch_payload = json.loads(await analyze_ocular_audio_batch(
             manifest_json=sources_json, query=query, interval_seconds=interval_seconds,
             window_seconds=window_seconds, top_k=None, enable_ocr=enable_ocr,
-            use_local_whisper=use_local_whisper, max_concurrency=max_concurrency, mode=mode))
+            use_local_whisper=use_local_whisper, max_concurrency=max_concurrency,
+            mode=mode, budget_seconds=budget_seconds))
         if batch_payload.get("error"):
             return json.dumps(batch_payload, ensure_ascii=False, indent=2)
         items = []
@@ -2209,6 +2229,7 @@ async def get_ocular_audio_video_context(
     enable_ocr: bool | None = None,
     analysis_depth: str | None = None,
     capability_mode: str = "intelligence",
+    budget_seconds: float | None = None,
 ) -> list:
     """
     Extracts transcript, metadata, and optional intelligent screenshots from a video.
@@ -2235,10 +2256,11 @@ async def get_ocular_audio_video_context(
 
     try:
         controls = mode_execution_controls(
-            capability_mode, enable_ocr=enable_ocr, requested_features=("visual",),
-            available_capabilities=_check_system_capabilities(),
+            capability_mode, enable_ocr=enable_ocr, budget_seconds=budget_seconds,
+            requested_features=("visual",), available_capabilities=_check_system_capabilities(),
         )
         mode_decision, mode_policy = controls["decision"], controls["policy"]
+        operation_timeout = min(NETWORK_TIMEOUT, float(mode_decision["limits"]["max_runtime_seconds"]))
         normalized_depth = normalize_analysis_level(analysis_depth or mode_policy["analysis_depth"])
     except ValueError as exc:
         return [f"Error: {exc}"]
@@ -2282,7 +2304,7 @@ async def get_ocular_audio_video_context(
         try:
             metadata = await asyncio.wait_for(
                 asyncio.to_thread(_blocking_metadata_fetch, url, cookies_path),
-                timeout=NETWORK_TIMEOUT
+                timeout=operation_timeout
             )
         except asyncio.TimeoutError:
             log.error("Metadata fetch timed out after %ds", NETWORK_TIMEOUT)
@@ -2303,7 +2325,7 @@ async def get_ocular_audio_video_context(
 
                 transcript_list = await asyncio.wait_for(
                     asyncio.to_thread(fetch_captions),
-                    timeout=NETWORK_TIMEOUT
+                    timeout=operation_timeout
                 )
                 formatted_segments = []
                 for entry in transcript_list:
@@ -2327,7 +2349,7 @@ async def get_ocular_audio_video_context(
                         target_param = video_id if is_youtube else url
                         transcript_text = await asyncio.wait_for(
                             asyncio.to_thread(_blocking_whisper_transcription, target_param, cookies_path),
-                            timeout=NETWORK_TIMEOUT
+                            timeout=operation_timeout
                         )
                         write_to_cache(cache_id, {
                             "metadata": metadata,
@@ -2344,7 +2366,7 @@ async def get_ocular_audio_video_context(
             try:
                 transcript_text = await asyncio.wait_for(
                     asyncio.to_thread(_blocking_whisper_transcription, url, cookies_path),
-                    timeout=NETWORK_TIMEOUT
+                    timeout=operation_timeout
                 )
                 write_to_cache(cache_id, {
                     "metadata": metadata,
@@ -2402,7 +2424,7 @@ async def get_ocular_audio_video_context(
     try:
         screenshot_payload = await asyncio.wait_for(
             asyncio.to_thread(_blocking_screenshot_extractor, url, timestamps_secs, cookies_path, enable_ocr),
-            timeout=NETWORK_TIMEOUT
+            timeout=operation_timeout
         )
     except asyncio.TimeoutError:
         log.error("Screenshot extraction timed out after %ds", NETWORK_TIMEOUT)
