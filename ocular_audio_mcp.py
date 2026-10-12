@@ -38,7 +38,13 @@ from evidence_index import (
     search_evidence,
     timeline_window,
 )
-from evidence_store import EvidenceRecord, EvidenceStore, build_canonical_evidence
+from evidence_store import (
+    ALLOWED_MODALITIES,
+    SCHEMA_VERSION as EVIDENCE_SCHEMA_VERSION,
+    EvidenceRecord,
+    EvidenceStore,
+    build_canonical_evidence,
+)
 from visual_index import (
     frame_descriptor,
     frames_from_payload,
@@ -175,6 +181,15 @@ def _check_system_capabilities() -> dict:
         "opencv": False,
         "cookies_found": False,
         "cache_dir": str(CACHE_DIR),
+        "canonical_evidence": {
+            "available": True,
+            "schema_version": EVIDENCE_SCHEMA_VERSION,
+            "modalities": sorted(ALLOWED_MODALITIES),
+            "store_dir": str(EVIDENCE_STORE_DIR),
+            "atomic_manifest_writes": True,
+            "content_integrity_checks": True,
+            "stable_evidence_ids": True,
+        },
         "visual_evidence": {
             "available": True,
             "cache_dir": str(VISUAL_CACHE_DIR),
