@@ -27,7 +27,8 @@
     "visual_index.py",
     "bin/",
     "docker/",
-    "scripts/"
+    "scripts/",
+    "evidence_store.py"
   ],
   "keywords": [
     "mcp",

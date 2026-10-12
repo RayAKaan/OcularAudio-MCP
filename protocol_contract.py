@@ -41,6 +41,7 @@ TOOL_NAMES = (
     "clear_ocular_audio_cache",
     "get_ocular_audio_video_context",
     "search_ocular_audio_video",
+    "query_ocular_audio_evidence",
     "get_ocular_audio_video_timeline",
     "inspect_ocular_audio_moment",
     "search_ocular_audio_cache",
@@ -52,6 +53,7 @@ READ_ONLY_PREFIXES = (
     "get_",
     "list_",
     "search_",
+    "query_",
     "inspect_",
     "plan_",
 )

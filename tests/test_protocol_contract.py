@@ -19,14 +19,20 @@ class ProtocolContractTests(unittest.TestCase):
 
     def test_all_tools_have_unique_contracts(self):
         contracts = tool_contracts()
-        self.assertEqual(32, len(contracts))
-        self.assertEqual(32, len({item["name"] for item in contracts}))
+        self.assertEqual(33, len(contracts))
+        self.assertEqual(33, len({item["name"] for item in contracts}))
 
     def test_destructive_cache_tool_is_annotated(self):
         contract = tool_contract("clear_ocular_audio_cache")
         self.assertFalse(contract.read_only)
         self.assertTrue(contract.destructive)
         self.assertTrue(contract.idempotent)
+
+    def test_canonical_evidence_query_is_read_only(self):
+        contract = tool_contract("query_ocular_audio_evidence")
+        self.assertTrue(contract.read_only)
+        self.assertFalse(contract.destructive)
+        self.assertEqual("evidence", contract.category)
 
     def test_read_only_tools_are_safe_hints(self):
         contract = tool_contract("search_ocular_audio_video")

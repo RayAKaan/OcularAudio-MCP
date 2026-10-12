@@ -13,7 +13,7 @@ OcularAudio lets MCP-compatible AI systems watch, listen to, search, inspect, co
 - **Speech understanding:** timestamped captions with local Whisper fallback when captions are unavailable.
 - **Visual understanding:** intelligent screenshots, exact frames, frame bursts, crops, visual indexing and perceptual similarity.
 - **On-screen text:** optional Tesseract OCR produces searchable visual text evidence.
-- **Evidence search:** timestamp-aware lexical, semantic and hybrid retrieval instead of forcing agents to consume entire media files.
+- **Evidence search:** timestamp-aware lexical, semantic and hybrid retrieval over stable, provenance-preserving canonical evidence records.
 - **Multimodal analysis:** aligns transcript, visual and OCR evidence around the same moments.
 - **Batch intelligence:** process multiple sources, search across them, and generate cross-video comparisons with failure isolation.
 - **Agentic execution:** turn analysis requests into bounded plans with retries, timeouts, audit records and health reporting.
@@ -39,11 +39,30 @@ Research and lecture analysis · product demonstrations · competitor analysis �
 | Batch analysis | Investigate collections of videos |
 | Cross-video comparison | Compare evidence across sources |
 | Agentic workflows | Execute bounded evidence investigations |
-| Capability modes | Trade speed for analysis depth |
+| Capability modes | Auto-select or enforce Lite, Intelligence, and Deep execution budgets |
 | Cache | Make repeated analysis faster |
 | MCP prompts | Start common investigation workflows |
 | MCP resources | Give hosts operational context |
 | HTTP deployment | Run as a protected network service |
+
+## Canonical evidence architecture
+
+All source artifacts are normalized into one local manifest per source. Evidence records have stable content-derived IDs, modality labels, timestamp bounds, content hashes, provenance pointers, and metadata. Transcript search, timelines, moment inspection, and hybrid retrieval share the same canonical IDs; OCR and visual-frame records are indexed alongside transcript evidence. Manifests are written atomically, validated on read, deduplicated by ID, and refreshed from the existing transcript and visual caches without requiring a migration or a database. Clearing a source removes its transcript, canonical manifest, visual index, and frame artifacts together. Manifest metadata intentionally stores a bounded summary rather than the source URL or credentials.
+
+## Four-level intelligence engine
+
+Every request is resolved through one deterministic policy engine. Auto resolves to Lite, Intelligence, or Deep based on query intent, requested features, source count, media duration, and an optional time budget. The decision is returned as machine-readable metadata with explicit limits, disabled features, capability gaps, and adjustments.
+
+| Mode | Evidence | Visual frames | Default sampling | Runtime ceiling | Sources | Behavior |
+|---|---:|---:|---:|---:|---:|---|
+| Lite | 8 | 8 | 30 s | 45 s | 1 | Transcript/metadata first; OCR, multimodal and batch are disabled |
+| Intelligence | 24 | 24 | 10 s | 180 s | 10 | Balanced retrieval, visual/OCR and multimodal analysis |
+| Deep | 64 | 64 | 3 s | 600 s | 32 | Expanded evidence and multi-step investigation |
+| Auto | Policy-selected | Policy-selected | Policy-selected | Policy-selected | Policy-selected | Resolves to one of the three execution modes |
+
+Modes enforce evidence caps, frame limits, source limits, retry counts, concurrency, sampling intervals, and runtime ceilings. Missing OpenCV, FFmpeg, or Tesseract is reported as a capability gap; optional unavailable features are disabled rather than represented as successful. Explicit source-limit violations fail with a clear error instead of silently dropping sources. Source coverage remains shared across modes.
+
+The CLI's existing --mode flag now reaches the Python runtime. Use --budget-seconds to impose a caller-specified runtime ceiling (0.001-900 seconds). MCP planning, agentic execution, hybrid search, visual indexing, multimodal analysis, and batch analysis expose the same decision contract. Use --mode deep for comprehensive evidence or --mode lite for a fast overview.
 
 ## Quick start
 
@@ -105,6 +124,7 @@ Codex CLI:
 ### Core modules
 - media_resolver.py + universal_sources.py: source classification, platform families, streams, local media and analysis policy.
 - evidence_index.py: timestamped evidence segmentation, chapter association and deterministic retrieval.
+- evidence_store.py: canonical transcript/chapter/metadata/visual/OCR records, stable evidence IDs, provenance, integrity-checked manifests, atomic persistence and lifecycle cleanup.
 - visual_index.py: frame sampling, bursts, crops, perceptual hashes, descriptors and OCR evidence.
 - semantic_index.py: local TF-IDF/lexical/semantic and hybrid retrieval.
 - multimodal_index.py: transcript/visual/OCR timestamp alignment and ranking.
@@ -117,8 +137,8 @@ Codex CLI:
 
 ## MCP surface
 
-### 32 tools
-Media/evidence: get_ocular_audio_transcript, get_ocular_audio_video_context, search_ocular_audio_video, get_ocular_audio_video_timeline, inspect_ocular_audio_moment, get_ocular_audio_metadata, get_ocular_audio_chapters, inspect_ocular_audio_source, get_ocular_audio_capabilities.
+### 33 tools
+Media/evidence: get_ocular_audio_transcript, get_ocular_audio_video_context, search_ocular_audio_video, get_ocular_audio_video_timeline, inspect_ocular_audio_moment, query_ocular_audio_evidence, get_ocular_audio_metadata, get_ocular_audio_chapters, inspect_ocular_audio_source, get_ocular_audio_capabilities.
 
 Visual/OCR: get_ocular_audio_video_screenshots, index_ocular_audio_video_visuals, search_ocular_audio_visuals, get_ocular_audio_video_frame, get_ocular_audio_video_frame_burst, crop_ocular_audio_video_frame.
 

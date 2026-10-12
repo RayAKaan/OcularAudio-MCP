@@ -2,10 +2,12 @@ import os
 import re
 import sys
 import json
+import math
 import tempfile
 import time
 import asyncio
 import subprocess
+import shutil
 import http.cookiejar
 import logging
 import threading
@@ -35,6 +37,13 @@ from evidence_index import (
     nearest_evidence,
     search_evidence,
     timeline_window,
+)
+from evidence_store import (
+    ALLOWED_MODALITIES,
+    SCHEMA_VERSION as EVIDENCE_SCHEMA_VERSION,
+    EvidenceRecord,
+    EvidenceStore,
+    build_canonical_evidence,
 )
 from visual_index import (
     frame_descriptor,
@@ -70,7 +79,10 @@ from batch_index import (
 from universal_sources import universal_capabilities
 from protocol_contract import server_contract, tool_annotations
 from prompts import prompt_catalog, render_compare_videos, render_inspect_video, render_search_video_evidence, render_visual_review
-from capability_modes import get_mode_policy, mode_capabilities, mode_output_contract, normalize_mode, resolve_mode
+from capability_modes import (
+    build_mode_decision, get_mode_policy, mode_capabilities, mode_execution_controls,
+    mode_output_contract, normalize_mode, resolve_mode,
+)
 from deployment_security import build_auth_settings, load_deployment_security, StaticBearerTokenVerifier
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.transport_security import TransportSecuritySettings
@@ -105,6 +117,8 @@ VISUAL_INDEX_VERSION = 1
 VISUAL_MAX_FRAMES = 240
 BATCH_CACHE_DIR = CACHE_DIR / "batches"
 BATCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+EVIDENCE_STORE_DIR = CACHE_DIR / "evidence"
+EVIDENCE_STORE_DIR.mkdir(parents=True, exist_ok=True)
 AUDIT_LOG_PATH = CACHE_DIR / "audit.jsonl"
 
 # Cache expiration: 7 days in seconds
@@ -167,6 +181,15 @@ def _check_system_capabilities() -> dict:
         "opencv": False,
         "cookies_found": False,
         "cache_dir": str(CACHE_DIR),
+        "canonical_evidence": {
+            "available": True,
+            "schema_version": EVIDENCE_SCHEMA_VERSION,
+            "modalities": sorted(ALLOWED_MODALITIES),
+            "store_dir": str(EVIDENCE_STORE_DIR),
+            "atomic_manifest_writes": True,
+            "content_integrity_checks": True,
+            "stable_evidence_ids": True,
+        },
         "visual_evidence": {
             "available": True,
             "cache_dir": str(VISUAL_CACHE_DIR),
@@ -310,18 +333,37 @@ def _get_cache_list() -> list:
 
 
 def _clear_cache(video_id: str = None) -> dict:
-    """Clear cache for a specific video or all videos."""
+    """Clear transcript, canonical evidence, visual manifest, and frame artifacts together."""
     if video_id:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", str(video_id)):
+            return {"error": "video_id must be a safe cache identifier.", "cleared": 0}
         cache_file = CACHE_DIR / f"{video_id}.json"
-        if cache_file.exists():
-            cache_file.unlink()
-            return {"cleared": 1, "video_id": video_id}
-        return {"cleared": 0, "video_id": video_id, "message": "Not found in cache"}
-    else:
-        count = len(list(CACHE_DIR.glob("*.json")))
-        for f in CACHE_DIR.glob("*.json"):
-            f.unlink()
-        return {"cleared": count, "message": f"Cleared {count} cached videos"}
+        cleared = int(cache_file.exists())
+        cache_file.unlink(missing_ok=True)
+        cleared += int(_get_evidence_store().delete(video_id))
+        visual_path = VISUAL_CACHE_DIR / f"{video_id}.json"
+        cleared += int(visual_path.exists())
+        visual_path.unlink(missing_ok=True)
+        frame_dir = VISUAL_FRAME_DIR / video_id
+        if frame_dir.exists():
+            shutil.rmtree(frame_dir, ignore_errors=True)
+            cleared += 1
+        return {"cleared": cleared, "video_id": video_id, "message": "Source evidence artifacts cleared." if cleared else "Not found in cache"}
+    count = 0
+    cache_root = Path(CACHE_DIR)
+    for directory in (cache_root, cache_root / "evidence", cache_root / "visual"):
+        if not directory.exists():
+            continue
+        for cache_file in directory.glob("*.json"):
+            cache_file.unlink(missing_ok=True)
+            count += 1
+    frame_root = cache_root / "visual" / "frames"
+    if frame_root.exists():
+        for frame_dir in frame_root.iterdir():
+            if frame_dir.is_dir():
+                shutil.rmtree(frame_dir, ignore_errors=True)
+                count += 1
+    return {"cleared": count, "message": f"Cleared {count} cached evidence artifacts"}
 
 def get_whisper_engine():
     global _whisper_engine
@@ -1203,60 +1245,68 @@ def _blocking_visual_frame_capture(
 @mcp.tool(annotations=tool_annotations("index_ocular_audio_video_visuals"))
 async def index_ocular_audio_video_visuals(
     url: str,
-    interval_seconds: float = 10,
-    enable_ocr: bool = True,
+    interval_seconds: float | None = None,
+    enable_ocr: bool | None = None,
     force: bool = False,
+    mode: str = "auto",
+    budget_seconds: float | None = None,
 ) -> str:
-    """Build or refresh a persistent timestamped visual evidence index for a media source."""
+    """Build a persistent visual evidence index under a mode-specific sampling budget."""
     try:
+        controls = mode_execution_controls(
+            mode, requested_features=("visual",), interval_seconds=interval_seconds,
+            enable_ocr=enable_ocr, budget_seconds=budget_seconds,
+            available_capabilities=_check_system_capabilities(),
+        )
+        decision = controls["decision"]
+        if not decision["features"]["visual"]:
+            return json.dumps({
+                "error": "Visual indexing is unavailable because this runtime lacks required media dependencies.",
+                "mode_decision": decision,
+            }, ensure_ascii=False)
         cache_id = _cache_id(url)
+        effective_interval, effective_ocr = controls["interval_seconds"], controls["enable_ocr"]
+        max_frames = decision["limits"]["max_frames"]
         if not force:
             existing = _read_visual_index(cache_id)
-            if existing and existing.get("version") == VISUAL_INDEX_VERSION:
+            if (
+                existing and existing.get("version") == VISUAL_INDEX_VERSION
+                and existing.get("mode") == decision["resolved_mode"]
+                and existing.get("interval_seconds") == effective_interval
+                and existing.get("ocr_enabled") == effective_ocr
+                and int(existing.get("frame_count", 0)) <= max_frames
+            ):
+                _refresh_canonical_evidence(cache_id, read_from_cache(cache_id))
                 return json.dumps(existing, ensure_ascii=False, indent=2)
-
+        timeout = min(NETWORK_TIMEOUT, float(decision["limits"]["max_runtime_seconds"]))
         resolved = await asyncio.wait_for(
-            asyncio.to_thread(resolve_media_source, url, find_cookies_file()),
-            timeout=NETWORK_TIMEOUT,
+            asyncio.to_thread(resolve_media_source, url, find_cookies_file()), timeout=timeout,
         )
         duration = float(resolved.get("duration_seconds") or 0)
         if duration <= 0:
             return json.dumps({
                 "error": "Unable to determine media duration; visual indexing requires a finite video.",
-                "source_id": cache_id,
+                "source_id": cache_id, "mode_decision": decision,
             }, ensure_ascii=False)
-
-        timestamps = sample_timestamps(
-            duration,
-            interval_seconds=interval_seconds,
-            max_frames=VISUAL_MAX_FRAMES,
-        )
+        timestamps = sample_timestamps(duration, interval_seconds=effective_interval, max_frames=max_frames)
         frames = await asyncio.wait_for(
             asyncio.to_thread(
-                _blocking_visual_frame_capture,
-                url,
-                timestamps,
-                find_cookies_file(),
-                enable_ocr,
-            ),
-            timeout=NETWORK_TIMEOUT,
+                _blocking_visual_frame_capture, url, timestamps, find_cookies_file(), effective_ocr,
+            ), timeout=timeout,
         )
         payload = {
-            "version": VISUAL_INDEX_VERSION,
-            "source_id": cache_id,
-            "url": url,
-            "title": resolved.get("title", ""),
-            "duration_seconds": duration,
-            "interval_seconds": max(1.0, float(interval_seconds)),
-            "ocr_enabled": bool(enable_ocr),
-            "frame_count": len(frames),
-            "frames": frames,
+            "version": VISUAL_INDEX_VERSION, "source_id": cache_id, "url": url,
+            "title": resolved.get("title", ""), "duration_seconds": duration,
+            "mode": decision["resolved_mode"], "mode_decision": decision,
+            "interval_seconds": effective_interval, "max_frames": max_frames,
+            "ocr_enabled": effective_ocr, "frame_count": len(frames), "frames": frames,
             "created_at": time.time(),
         }
         _write_visual_index(cache_id, payload)
+        _refresh_canonical_evidence(cache_id, read_from_cache(cache_id))
         return json.dumps(payload, ensure_ascii=False, indent=2)
     except asyncio.TimeoutError:
-        return json.dumps({"error": "Visual indexing timed out."}, ensure_ascii=False)
+        return json.dumps({"error": "Visual indexing timed out within the selected mode budget."}, ensure_ascii=False)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
@@ -1265,27 +1315,50 @@ async def index_ocular_audio_video_visuals(
 async def search_ocular_audio_visuals(
     url: str,
     query: str,
-    top_k: int = 8,
+    top_k: int | None = None,
     min_score: float = 0.0,
+    mode: str = "auto",
+    budget_seconds: float | None = None,
 ) -> str:
-    """Search indexed visual evidence using OCR text and return ranked frames."""
-    cache_id = _cache_id(url)
-    index = _read_visual_index(cache_id)
-    if not index:
+    """Search indexed visual evidence under the selected evidence budget."""
+    try:
+        controls = mode_execution_controls(
+            mode, query, top_k=top_k, budget_seconds=budget_seconds, requested_features=("visual",),
+        )
+        decision = controls["decision"]
+        if not decision["features"]["visual"]:
+            return json.dumps({"error": "Visual retrieval is unavailable in this mode or runtime.", "mode_decision": decision}, ensure_ascii=False)
+        cache_id = _cache_id(url)
+        index = _read_visual_index(cache_id)
+        if not index:
+            return json.dumps({
+                "error": "No visual index found.", "source_id": cache_id,
+                "suggestion": "Run index_ocular_audio_video_visuals first.",
+                "mode_decision": decision,
+            }, ensure_ascii=False)
+        frames = frames_from_payload(index.get("frames", []))
+        results = search_visual_frames(frames, query, top_k=controls["top_k"], min_score=min_score)
+        frame_evidence = _canonical_frame_evidence_lookup(cache_id)
+        result_payloads = []
+        for item in results:
+            payload = item.to_dict()
+            refs = frame_evidence.get(item.frame_id, {})
+            visual_record = refs.get("visual")
+            ocr_record = refs.get("ocr")
+            payload["evidence_id"] = visual_record.evidence_id if visual_record else None
+            payload["ocr_evidence_id"] = ocr_record.evidence_id if ocr_record else None
+            payload["provenance"] = {
+                "source_id": cache_id, "frame_id": item.frame_id,
+                "visual_artifact": "visual_index",
+            }
+            result_payloads.append(payload)
         return json.dumps({
-            "error": "No visual index found.",
-            "source_id": cache_id,
-            "suggestion": "Run index_ocular_audio_video_visuals first.",
-        }, ensure_ascii=False)
-    frames = frames_from_payload(index.get("frames", []))
-    results = search_visual_frames(frames, query, top_k=top_k, min_score=min_score)
-    return json.dumps({
-        "source_id": cache_id,
-        "url": url,
-        "query": query.strip(),
-        "result_count": len(results),
-        "results": [item.to_dict() for item in results],
-    }, ensure_ascii=False, indent=2)
+            "source_id": cache_id, "url": url, "query": query.strip(),
+            "mode_decision": decision, "result_count": len(results),
+            "results": result_payloads,
+        }, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
 @mcp.tool(annotations=tool_annotations("get_ocular_audio_video_frame"))
@@ -1427,49 +1500,32 @@ def _semantic_documents_for_source(
     url: str,
     cached: dict | None = None,
 ) -> list[SemanticDocument]:
-    """Build hybrid-search documents from the canonical transcript and visual caches."""
+    """Build retrieval documents exclusively from the canonical evidence manifest."""
     cache_id = _cache_id(url)
-    documents: list[SemanticDocument] = []
-
-    # Transcript evidence is derived from the same cache used by the other
-    # evidence tools; it is not stored in a separate, nonexistent JSON file.
     if cached is None:
         cached = read_from_cache(cache_id)
-    if cached:
-        metadata = cached.get("metadata", {})
-        source_metadata = metadata.get("source", {})
-        duration = _parse_duration_str(str(metadata.get("duration", "0")))
-        if not duration:
-            duration = float(source_metadata.get("duration_seconds") or 0)
-        segments = build_evidence_segments(
-            cached.get("transcript", ""),
-            duration_seconds=duration,
-            chapters=metadata.get("chapters", []),
-        )
-        for item in segments:
-            documents.append(SemanticDocument(
-                document_id=str(item.evidence_id),
-                text=str(item.text),
-                source=str(item.source),
-                start_seconds=float(item.start_seconds),
-                end_seconds=float(item.end_seconds),
-                chapter=str(item.chapter),
-                metadata={"source_id": cache_id},
-            ))
-
-    visual_cache = _read_visual_index(cache_id)
-    if visual_cache:
-        for item in visual_cache.get("frames", []):
-            ocr = str(item.get("ocr_text", "")).strip()
-            if ocr:
-                documents.append(SemanticDocument(
-                    document_id=str(item.get("frame_id", "")),
-                    text=ocr,
-                    source="visual_ocr",
-                    start_seconds=float(item.get("timestamp_seconds", 0)),
-                    end_seconds=float(item.get("timestamp_seconds", 0)),
-                    metadata={"source_id": cache_id, "image_path": item.get("image_path", "")},
-                ))
+    _refresh_canonical_evidence(cache_id, cached)
+    manifest = _get_evidence_store().read(cache_id)
+    records = manifest["records"] if manifest else []
+    documents: list[SemanticDocument] = []
+    for record in records:
+        if record.modality not in {"transcript", "ocr"}:
+            continue
+        documents.append(SemanticDocument(
+            document_id=record.evidence_id,
+            text=record.text,
+            source=record.modality,
+            start_seconds=record.start_seconds,
+            end_seconds=record.end_seconds,
+            chapter=str(record.metadata.get("chapter", "")),
+            metadata={
+                "source_id": cache_id,
+                "evidence_id": record.evidence_id,
+                "content_hash": record.content_hash,
+                "provenance": record.provenance,
+                **record.metadata,
+            },
+        ))
     return documents
 
 
@@ -1477,26 +1533,31 @@ def _semantic_documents_for_source(
 async def search_ocular_audio_hybrid(
     url: str,
     query: str,
-    top_k: int = 8,
+    top_k: int | None = None,
     semantic_weight: float = 0.65,
+    mode: str = "auto",
+    budget_seconds: float | None = None,
 ) -> str:
-    """Search transcript and visual OCR evidence with transparent hybrid ranking."""
+    """Search transcript and visual OCR evidence under a bounded capability policy."""
     try:
-        cache_id, cached = await _ensure_evidence_cache(url)
-        documents = await asyncio.to_thread(_semantic_documents_for_source, url, cached)
-        results = await asyncio.to_thread(
-            hybrid_search,
-            documents,
-            query,
-            top_k,
-            semantic_weight,
+        controls = mode_execution_controls(
+            mode, query, top_k=top_k, budget_seconds=budget_seconds, requested_features=("retrieval",),
+        )
+        timeout = min(NETWORK_TIMEOUT, float(controls["decision"]["limits"]["max_runtime_seconds"]))
+        cache_id, cached = await asyncio.wait_for(_ensure_evidence_cache(url), timeout=timeout)
+        documents = await asyncio.wait_for(
+            asyncio.to_thread(_semantic_documents_for_source, url, cached), timeout=timeout,
+        )
+        results = await asyncio.wait_for(
+            asyncio.to_thread(hybrid_search, documents, query, controls["top_k"], semantic_weight),
+            timeout=timeout,
         )
         return json.dumps({
-            "source_id": _cache_id(url),
-            "query": query.strip(),
+            "source_id": cache_id, "query": query.strip(),
+            "mode_decision": controls["decision"],
+            "effective_controls": {"top_k": controls["top_k"]},
             "semantic_weight": max(0.0, min(1.0, float(semantic_weight))),
-            "result_count": len(results),
-            "results": [item.to_dict() for item in results],
+            "result_count": len(results), "results": [item.to_dict() for item in results],
         }, ensure_ascii=False, indent=2)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -1507,47 +1568,82 @@ async def search_ocular_audio_hybrid(
 async def analyze_ocular_audio_multimodal(
     url: str,
     query: str = "",
-    interval_seconds: float = 10,
+    interval_seconds: float | None = None,
     window_seconds: float = 5,
-    top_k: int = 8,
-    enable_ocr: bool = True,
+    top_k: int | None = None,
+    enable_ocr: bool | None = None,
     use_local_whisper: bool = True,
     force: bool = False,
+    mode: str = "auto",
+    budget_seconds: float | None = None,
 ) -> str:
-    """Build and rank unified transcript, visual, and OCR evidence moments."""
+    """Build and rank unified evidence moments under a bounded mode policy."""
     try:
-        cache_id, cached = await _ensure_evidence_cache(url, use_local_whisper)
-        metadata = cached.get("metadata", {})
-        duration = _parse_duration_str(metadata.get("duration", "0"))
-        if not duration:
-            duration = float(metadata.get("source", {}).get("duration_seconds") or 0)
-        segments = build_evidence_segments(
-            cached.get("transcript", ""),
-            duration_seconds=duration,
-            chapters=metadata.get("chapters", []),
+        controls = mode_execution_controls(
+            mode, query, interval_seconds=interval_seconds, top_k=top_k,
+            enable_ocr=enable_ocr, budget_seconds=budget_seconds,
+            requested_features=("multimodal",), available_capabilities=_check_system_capabilities(),
         )
-
+        decision = controls["decision"]
+        if not decision["features"]["multimodal"]:
+            return json.dumps({
+                "error": f"Mode '{decision['resolved_mode']}' or this runtime does not support multimodal analysis.",
+                "mode_decision": decision,
+            }, ensure_ascii=False)
+        timeout = min(NETWORK_TIMEOUT, float(decision["limits"]["max_runtime_seconds"]))
+        cache_id, cached = await asyncio.wait_for(
+            _ensure_evidence_cache(url, use_local_whisper), timeout=timeout,
+        )
+        metadata = cached.get("metadata", {})
+        segments = _canonical_transcript_segments(cache_id, cached)
         existing = _read_visual_index(cache_id)
-        if force or not existing or bool(existing.get("ocr_enabled")) != bool(enable_ocr):
+        if (
+            force or not existing
+            or existing.get("mode") != decision["resolved_mode"]
+            or existing.get("interval_seconds") != controls["interval_seconds"]
+            or bool(existing.get("ocr_enabled")) != controls["enable_ocr"]
+            or int(existing.get("frame_count", 0)) > decision["limits"]["max_frames"]
+        ):
             visual_result = await index_ocular_audio_video_visuals(
-                url=url,
-                interval_seconds=interval_seconds,
-                enable_ocr=enable_ocr,
-                force=True,
+                url=url, interval_seconds=controls["interval_seconds"],
+                enable_ocr=controls["enable_ocr"], force=True, mode=decision["resolved_mode"],
+                budget_seconds=decision["limits"]["max_runtime_seconds"],
             )
             existing = json.loads(visual_result)
+            if existing.get("error"):
+                return json.dumps({"error": existing["error"], "mode_decision": decision}, ensure_ascii=False)
         frames = frames_from_payload((existing or {}).get("frames", []))
         moments = build_multimodal_moments(segments, frames, window_seconds=window_seconds)
-        ranked = rank_multimodal_moments(moments, query=query, top_k=top_k)
+        ranked = rank_multimodal_moments(moments, query=query, top_k=controls["top_k"])
+        frame_evidence = _canonical_frame_evidence_lookup(cache_id)
+        result_payloads = []
+        for moment in ranked:
+            payload = describe_moment(moment)
+            for frame in payload.get("visual_frames", []):
+                refs = frame_evidence.get(str(frame.get("frame_id", "")), {})
+                visual_record = refs.get("visual")
+                ocr_record = refs.get("ocr")
+                frame["evidence_id"] = visual_record.evidence_id if visual_record else None
+                frame["ocr_evidence_id"] = ocr_record.evidence_id if ocr_record else None
+                frame["provenance"] = {
+                    "source_id": cache_id,
+                    "frame_id": frame.get("frame_id"),
+                    "visual_artifact": "visual_index",
+                }
+            result_payloads.append(payload)
         return json.dumps({
-            "source_id": cache_id,
-            "url": url,
-            "title": metadata.get("title", "Unknown"),
-            "query": query.strip(),
+            "source_id": cache_id, "url": url, "title": metadata.get("title", "Unknown"),
+            "query": query.strip(), "mode_decision": decision,
+            "effective_controls": {
+                "interval_seconds": controls["interval_seconds"],
+                "top_k": controls["top_k"], "enable_ocr": controls["enable_ocr"],
+            },
             "modality_contract": ["transcript", "visual", "ocr"],
             "moment_count": len(ranked),
-            "results": [describe_moment(moment) for moment in ranked],
+            "results": result_payloads,
         }, ensure_ascii=False, indent=2)
+    except asyncio.TimeoutError:
+        return json.dumps({"error": "Multimodal analysis exceeded the selected mode runtime budget."}, ensure_ascii=False)
     except Exception as exc:
         log.warning("Multimodal analysis failed: %s", exc)
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -1603,15 +1699,19 @@ async def plan_ocular_audio_analysis(
     mode: str = "auto",
     timeout_seconds: float = 120,
     max_retries: int = 2,
+    source_count: int = 1,
+    estimated_duration_seconds: float | None = None,
+    budget_seconds: float | None = None,
 ) -> str:
-    """Build a deterministic, inspectable execution plan for an analysis request."""
+    """Build a mode-aware plan with explicit evidence, time, and retry budgets."""
     try:
         policy = ExecutionPolicy(timeout_seconds=timeout_seconds, max_retries=max_retries).validate()
-        return json.dumps(
-            build_execution_plan(query, multi_video=multi_video, policy=policy).to_dict(),
-            ensure_ascii=False,
-            indent=2,
+        plan = build_execution_plan(
+            query, multi_video=multi_video, policy=policy, mode=mode,
+            source_count=source_count, estimated_duration_seconds=estimated_duration_seconds,
+            available_capabilities=_check_system_capabilities(), budget_seconds=budget_seconds,
         )
+        return json.dumps(plan.to_dict(), ensure_ascii=False, indent=2)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
@@ -1648,47 +1748,73 @@ async def run_ocular_audio_analysis(
     mode: str = "auto",
     timeout_seconds: float = 120,
     max_retries: int = 2,
+    source_count: int = 1,
+    estimated_duration_seconds: float | None = None,
+    budget_seconds: float | None = None,
 ) -> str:
-    """Execute the deterministic analysis plan using existing evidence tools."""
+    """Execute a mode-aware, bounded plan using existing evidence tools."""
     try:
+        if multi_video:
+            source_count = len(parse_batch_manifest(url))
         policy = ExecutionPolicy(timeout_seconds=timeout_seconds, max_retries=max_retries).validate()
-        plan = build_execution_plan(query, multi_video=multi_video, policy=policy)
+        plan = build_execution_plan(
+            query, multi_video=multi_video, policy=policy, mode=mode,
+            source_count=source_count, estimated_duration_seconds=estimated_duration_seconds,
+            available_capabilities=_check_system_capabilities(), budget_seconds=budget_seconds,
+            execution=True,
+        )
+        if not plan.mode_decision["features"]["agentic"]:
+            return json.dumps({
+                "error": f"Mode '{plan.mode_decision['resolved_mode']}' does not allow agentic execution; use intelligence, deep, or auto.",
+                "mode_decision": plan.mode_decision,
+            }, ensure_ascii=False)
+        effective_policy = ExecutionPolicy(**plan.to_dict()["policy"]).validate()
+        top_k = int(plan.mode_decision["limits"]["max_evidence"])
+        resolved_mode = plan.mode_decision["resolved_mode"]
         outputs = []
         for step in plan.steps:
             if step.operation == "inspect_source":
                 worker = lambda: inspect_ocular_audio_source(url)
             elif step.operation == "search_hybrid":
-                worker = lambda: search_ocular_audio_hybrid(url=url, query=query, top_k=8)
+                worker = lambda: search_ocular_audio_hybrid(
+                    url=url, query=query, top_k=top_k, mode=resolved_mode,
+                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                )
             elif step.operation == "inspect_moment":
-                evidence = await search_ocular_audio_hybrid(url=url, query=query, top_k=1)
+                evidence = await search_ocular_audio_hybrid(
+                    url=url, query=query, top_k=1, mode=resolved_mode,
+                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                )
                 payload = json.loads(evidence)
                 timestamp = float((payload.get("results") or [{}])[0].get("start_seconds", 0))
                 worker = lambda: inspect_ocular_audio_moment(url=url, timestamp_seconds=timestamp)
             elif step.operation == "search_visual":
-                worker = lambda: search_ocular_audio_visuals(url=url, query=query, top_k=8)
+                worker = lambda: search_ocular_audio_visuals(
+                    url=url, query=query, top_k=top_k, mode=resolved_mode,
+                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                )
             elif step.operation == "timeline":
                 worker = lambda: get_ocular_audio_video_timeline(url=url)
             elif step.operation == "search_batch":
-                worker = lambda: search_ocular_audio_videos(sources_json=url, query=query, top_k=12)
+                worker = lambda: search_ocular_audio_videos(
+                    sources_json=url, query=query, top_k=top_k, mode=resolved_mode,
+                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                )
             elif step.operation == "compare_batch":
-                worker = lambda: compare_ocular_audio_videos(sources_json=url, query=query)
+                worker = lambda: compare_ocular_audio_videos(
+                    sources_json=url, query=query, mode=resolved_mode,
+                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                )
             else:
                 raise ValueError(f"Unsupported plan operation: {step.operation}")
-
-            result, audit = await execute_with_policy(step.operation, worker, policy)
+            result, audit = await execute_with_policy(step.operation, worker, effective_policy)
             append_audit_record(AUDIT_LOG_PATH, audit)
-            outputs.append({
-                "step": step.to_dict(),
-                "audit": audit.to_dict(),
-                "result": result,
-            })
+            outputs.append({"step": step.to_dict(), "audit": audit.to_dict(), "result": result})
             if audit.status != "success" and step.required:
                 break
-
         return json.dumps({
-            "plan": plan.to_dict(),
-            "completed_steps": len(outputs),
-            "results": outputs,
+            "plan": plan.to_dict(), "mode_decision": plan.mode_decision,
+            "completed_steps": len(outputs), "results": outputs,
         }, ensure_ascii=False, indent=2, default=str)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -1698,22 +1824,44 @@ async def run_ocular_audio_analysis(
 async def analyze_ocular_audio_batch(
     manifest_json: str,
     query: str = "",
-    interval_seconds: float = 10,
+    interval_seconds: float | None = None,
     window_seconds: float = 5,
-    top_k: int = 8,
-    enable_ocr: bool = True,
+    top_k: int | None = None,
+    enable_ocr: bool | None = None,
     use_local_whisper: bool = True,
-    max_concurrency: int = 2,
+    max_concurrency: int | None = None,
     force: bool = False,
+    mode: str = "auto",
+    budget_seconds: float | None = None,
 ) -> str:
-    """Analyze multiple media sources with bounded concurrency and isolated failures."""
+    """Analyze a bounded source collection using the selected capability mode."""
     try:
         sources = parse_batch_manifest(manifest_json)
         if not sources:
             return json.dumps({"error": "Batch manifest contains no valid sources."}, ensure_ascii=False)
-        concurrency = validate_concurrency(max_concurrency)
-        options = {"interval_seconds": interval_seconds, "window_seconds": window_seconds,
-                   "top_k": top_k, "enable_ocr": enable_ocr, "use_local_whisper": use_local_whisper}
+        controls = mode_execution_controls(
+            mode, query, interval_seconds=interval_seconds, top_k=top_k,
+            enable_ocr=enable_ocr, max_concurrency=max_concurrency,
+            source_count=len(sources), budget_seconds=budget_seconds,
+            requested_features=("batch", "multimodal"),
+            available_capabilities=_check_system_capabilities(), multi_video=len(sources) > 1,
+        )
+        decision = controls["decision"]
+        if not decision["features"]["batch"] or not decision["features"]["multimodal"]:
+            return json.dumps({
+                "error": f"Mode '{decision['resolved_mode']}' or this runtime does not support batch multimodal analysis.",
+                "mode_decision": decision,
+            }, ensure_ascii=False)
+        concurrency = validate_concurrency(controls["max_concurrency"])
+        interval, effective_top_k, effective_ocr = (
+            controls["interval_seconds"], controls["top_k"], controls["enable_ocr"]
+        )
+        options = {
+            "mode": decision["resolved_mode"], "mode_decision": decision,
+            "interval_seconds": interval, "window_seconds": window_seconds,
+            "top_k": effective_top_k, "enable_ocr": effective_ocr,
+            "use_local_whisper": use_local_whisper,
+        }
         batch_id = stable_batch_id(sources, query, options)
         if not force:
             cached = read_batch_result(BATCH_CACHE_DIR, batch_id)
@@ -1722,24 +1870,32 @@ async def analyze_ocular_audio_batch(
 
         async def worker(source):
             raw = await analyze_ocular_audio_multimodal(
-                url=source.url, query=query, interval_seconds=interval_seconds,
-                window_seconds=window_seconds, top_k=top_k, enable_ocr=enable_ocr,
-                use_local_whisper=use_local_whisper, force=force)
+                url=source.url, query=query, interval_seconds=interval,
+                window_seconds=window_seconds, top_k=effective_top_k,
+                enable_ocr=effective_ocr, use_local_whisper=use_local_whisper,
+                force=force, mode=decision["resolved_mode"],
+                budget_seconds=decision["limits"]["max_runtime_seconds"],
+            )
             payload = json.loads(raw)
             if payload.get("error"):
                 raise RuntimeError(payload["error"])
             return payload
 
-        items = await run_batch(sources, worker, max_concurrency=concurrency)
+        items = await asyncio.wait_for(
+            run_batch(sources, worker, max_concurrency=concurrency),
+            timeout=float(decision["limits"]["max_runtime_seconds"]),
+        )
         summary = summarize_batch(items)
         payload = {
-            "batch_id": batch_id, "query": query.strip(),
+            "batch_id": batch_id, "query": query.strip(), "mode_decision": decision,
             "options": {**options, "max_concurrency": concurrency},
             "summary": summary, "sources": [item.to_dict() for item in items],
-            "results": rank_cross_video_results(items, query, top_k=max(1, min(top_k, 100))),
+            "results": rank_cross_video_results(items, query, top_k=max(1, min(effective_top_k, 100))),
         }
         write_batch_result(BATCH_CACHE_DIR, batch_id, payload)
         return json.dumps(payload, ensure_ascii=False, indent=2)
+    except asyncio.TimeoutError:
+        return json.dumps({"error": "Batch analysis exceeded the selected mode runtime budget."}, ensure_ascii=False)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
@@ -1748,36 +1904,42 @@ async def analyze_ocular_audio_batch(
 async def search_ocular_audio_videos(
     sources_json: str,
     query: str,
-    top_k: int = 12,
-    interval_seconds: float = 10,
+    top_k: int | None = None,
+    interval_seconds: float | None = None,
     window_seconds: float = 5,
-    enable_ocr: bool = True,
+    enable_ocr: bool | None = None,
     use_local_whisper: bool = True,
-    max_concurrency: int = 2,
+    max_concurrency: int | None = None,
+    mode: str = "auto",
+    budget_seconds: float | None = None,
 ) -> str:
-    """Search multimodal evidence across multiple videos with one unified ranking."""
+    """Search multimodal evidence across multiple videos under one mode policy."""
     return await analyze_ocular_audio_batch(
         manifest_json=sources_json, query=query, interval_seconds=interval_seconds,
         window_seconds=window_seconds, top_k=top_k, enable_ocr=enable_ocr,
-        use_local_whisper=use_local_whisper, max_concurrency=max_concurrency)
+        use_local_whisper=use_local_whisper, max_concurrency=max_concurrency,
+        mode=mode, budget_seconds=budget_seconds)
 
 
 @mcp.tool(annotations=tool_annotations("compare_ocular_audio_videos"))
 async def compare_ocular_audio_videos(
     sources_json: str,
     query: str = "",
-    interval_seconds: float = 10,
+    interval_seconds: float | None = None,
     window_seconds: float = 5,
-    enable_ocr: bool = True,
+    enable_ocr: bool | None = None,
     use_local_whisper: bool = True,
-    max_concurrency: int = 2,
+    max_concurrency: int | None = None,
+    mode: str = "auto",
+    budget_seconds: float | None = None,
 ) -> str:
-    """Build a comparable per-video scorecard for the same multimodal query."""
+    """Build a comparable per-video scorecard under the selected mode budget."""
     try:
         batch_payload = json.loads(await analyze_ocular_audio_batch(
             manifest_json=sources_json, query=query, interval_seconds=interval_seconds,
-            window_seconds=window_seconds, top_k=50, enable_ocr=enable_ocr,
-            use_local_whisper=use_local_whisper, max_concurrency=max_concurrency))
+            window_seconds=window_seconds, top_k=None, enable_ocr=enable_ocr,
+            use_local_whisper=use_local_whisper, max_concurrency=max_concurrency,
+            mode=mode, budget_seconds=budget_seconds))
         if batch_payload.get("error"):
             return json.dumps(batch_payload, ensure_ascii=False, indent=2)
         items = []
@@ -1793,6 +1955,7 @@ async def compare_ocular_audio_videos(
                 result=item.get("result"), error=str(item.get("error", ""))))
         return json.dumps({
             "batch_id": batch_payload.get("batch_id"), "query": query.strip(),
+            "mode_decision": batch_payload.get("mode_decision"),
             "comparison": compare_batch_results(items, query),
         }, ensure_ascii=False, indent=2)
     except Exception as exc:
@@ -2133,8 +2296,10 @@ async def get_ocular_audio_video_context(
     url: str,
     detail_level: str = "auto",
     use_local_whisper: bool = True,
-    enable_ocr: bool = False,
-    analysis_depth: str = "understand"
+    enable_ocr: bool | None = None,
+    analysis_depth: str | None = None,
+    capability_mode: str = "intelligence",
+    budget_seconds: float | None = None,
 ) -> list:
     """
     Extracts transcript, metadata, and optional intelligent screenshots from a video.
@@ -2160,17 +2325,35 @@ async def get_ocular_audio_video_context(
         detail_level = "auto"
 
     try:
-        normalized_depth = normalize_analysis_level(analysis_depth)
+        controls = mode_execution_controls(
+            capability_mode, enable_ocr=enable_ocr, budget_seconds=budget_seconds,
+            requested_features=("visual",), available_capabilities=_check_system_capabilities(),
+        )
+        mode_decision, mode_policy = controls["decision"], controls["policy"]
+        operation_timeout = min(NETWORK_TIMEOUT, float(mode_decision["limits"]["max_runtime_seconds"]))
+        normalized_depth = normalize_analysis_level(analysis_depth or mode_policy["analysis_depth"])
     except ValueError as exc:
         return [f"Error: {exc}"]
 
+    enable_ocr = controls["enable_ocr"]
+    if mode_decision["resolved_mode"] == "lite" or not mode_decision["features"]["visual"]:
+        detail_level = "overview"
+    elif mode_decision["resolved_mode"] == "deep":
+        detail_level = "deep"
     if normalized_depth == "glance":
         detail_level = "overview"
     elif normalized_depth == "deep":
         detail_level = "deep"
     elif normalized_depth == "omniscient":
         detail_level = "deep"
-        enable_ocr = True
+        enable_ocr = mode_decision["features"]["ocr"]
+
+    # Capability mode is the hard execution boundary; legacy depth aliases may
+    # request more detail but must never bypass the selected mode's limits.
+    if mode_decision["resolved_mode"] == "lite" or not mode_decision["features"]["visual"]:
+        detail_level = "overview"
+    if not mode_decision["features"]["ocr"]:
+        enable_ocr = False
 
     video_id = extract_video_id(url)
     is_youtube = bool(video_id)
@@ -2191,7 +2374,7 @@ async def get_ocular_audio_video_context(
         try:
             metadata = await asyncio.wait_for(
                 asyncio.to_thread(_blocking_metadata_fetch, url, cookies_path),
-                timeout=NETWORK_TIMEOUT
+                timeout=operation_timeout
             )
         except asyncio.TimeoutError:
             log.error("Metadata fetch timed out after %ds", NETWORK_TIMEOUT)
@@ -2212,7 +2395,7 @@ async def get_ocular_audio_video_context(
 
                 transcript_list = await asyncio.wait_for(
                     asyncio.to_thread(fetch_captions),
-                    timeout=NETWORK_TIMEOUT
+                    timeout=operation_timeout
                 )
                 formatted_segments = []
                 for entry in transcript_list:
@@ -2236,7 +2419,7 @@ async def get_ocular_audio_video_context(
                         target_param = video_id if is_youtube else url
                         transcript_text = await asyncio.wait_for(
                             asyncio.to_thread(_blocking_whisper_transcription, target_param, cookies_path),
-                            timeout=NETWORK_TIMEOUT
+                            timeout=operation_timeout
                         )
                         write_to_cache(cache_id, {
                             "metadata": metadata,
@@ -2253,7 +2436,7 @@ async def get_ocular_audio_video_context(
             try:
                 transcript_text = await asyncio.wait_for(
                     asyncio.to_thread(_blocking_whisper_transcription, url, cookies_path),
-                    timeout=NETWORK_TIMEOUT
+                    timeout=operation_timeout
                 )
                 write_to_cache(cache_id, {
                     "metadata": metadata,
@@ -2274,6 +2457,8 @@ async def get_ocular_audio_video_context(
     # 4. OVERVIEW MODE — no screenshots
     if detail_level == "overview":
         return [
+            f"[CAPABILITY MODE: {mode_decision['resolved_mode']}]",
+            f"[MODE DECISION: {mode_decision['reason']}]",
             "[VIDEO CONTEXT - OVERVIEW]",
             header,
             "[TRANSCRIPT]",
@@ -2291,6 +2476,7 @@ async def get_ocular_audio_video_context(
                 break
 
     key_moments = extract_key_timestamps(transcript_text, duration_secs, mode=detail_level)
+    key_moments = key_moments[: mode_decision["limits"]["max_frames"]]
 
     if not key_moments:
         return [
@@ -2308,7 +2494,7 @@ async def get_ocular_audio_video_context(
     try:
         screenshot_payload = await asyncio.wait_for(
             asyncio.to_thread(_blocking_screenshot_extractor, url, timestamps_secs, cookies_path, enable_ocr),
-            timeout=NETWORK_TIMEOUT
+            timeout=operation_timeout
         )
     except asyncio.TimeoutError:
         log.error("Screenshot extraction timed out after %ds", NETWORK_TIMEOUT)
@@ -2325,6 +2511,9 @@ async def get_ocular_audio_video_context(
 
     success_count = sum(1 for item in screenshot_payload if hasattr(item, 'path'))
     result = [
+        f"[CAPABILITY MODE: {mode_decision['resolved_mode']}]",
+        f"[MODE DECISION: {mode_decision['reason']}]",
+        f"[MODE LIMITS: max_evidence={mode_decision['limits']['max_evidence']}, max_frames={mode_decision['limits']['max_frames']}, runtime={mode_decision['limits']['max_runtime_seconds']}s]",
         f"[VIDEO CONTEXT - TRANSCRIPT + VISUALS]",
         f"Detail Level: {detail_level} | Analysis Depth: {normalized_depth} ({success_count} screenshots captured)",
         header,
@@ -2347,16 +2536,151 @@ async def get_ocular_audio_video_context(
 
 
 
+def _get_evidence_store() -> EvidenceStore:
+    """Resolve the store from the current cache root (also supports isolated tests)."""
+    return EvidenceStore(CACHE_DIR / "evidence")
+
+
+def _refresh_canonical_evidence(cache_id: str, cached: dict | None = None) -> list[EvidenceRecord]:
+    """Synchronize source artifacts into the canonical manifest, including visual-only sources."""
+    cached = cached if isinstance(cached, dict) else read_from_cache(cache_id)
+    cached = cached if isinstance(cached, dict) else {}
+    visual_cache = _read_visual_index(cache_id) or {}
+    if not cached and not visual_cache:
+        return []
+    metadata = cached.get("metadata", {}) if isinstance(cached.get("metadata"), dict) else {}
+    source_metadata = metadata.get("source", {}) if isinstance(metadata.get("source"), dict) else {}
+    duration = _parse_duration_str(str(metadata.get("duration", "0")))
+    if not duration:
+        try:
+            duration = float(source_metadata.get("duration_seconds") or visual_cache.get("duration_seconds") or 0)
+        except (TypeError, ValueError):
+            duration = 0
+    title = str(metadata.get("title") or visual_cache.get("title") or "")
+    source_kind = str(source_metadata.get("source_kind", ""))
+    platform = str(source_metadata.get("platform", ""))
+    media_type = str(source_metadata.get("media_type", ""))
+    records = build_canonical_evidence(
+        source_id=cache_id,
+        transcript=str(cached.get("transcript", "")),
+        duration_seconds=duration,
+        chapters=metadata.get("chapters", []),
+        visual_frames=visual_cache.get("frames", []),
+        source_metadata={
+            "title": title,
+            "duration": metadata.get("duration", duration),
+            "source_kind": source_kind,
+            "platform": platform,
+            "media_type": media_type,
+        },
+    )
+    _get_evidence_store().save(cache_id, records, {
+        "title": title,
+        "duration": metadata.get("duration", duration),
+        "record_count": len(records),
+        "source_kind": source_kind,
+        "platform": platform,
+        "media_type": media_type,
+    })
+    manifest = _get_evidence_store().read(cache_id)
+    return manifest["records"] if manifest else []
+
+
+def _canonical_frame_evidence_lookup(cache_id: str) -> dict[str, dict[str, EvidenceRecord]]:
+    """Map frame IDs to their canonical visual and OCR evidence records."""
+    _refresh_canonical_evidence(cache_id, read_from_cache(cache_id))
+    manifest = _get_evidence_store().read(cache_id)
+    lookup: dict[str, dict[str, EvidenceRecord]] = {}
+    if not manifest:
+        return lookup
+    for record in manifest["records"]:
+        frame_id = record.provenance.get("frame_id")
+        if not frame_id or record.modality not in {"visual", "ocr"}:
+            continue
+        lookup.setdefault(str(frame_id), {})[record.modality] = record
+    return lookup
+
+
+@mcp.tool(annotations=tool_annotations("query_ocular_audio_evidence"))
+async def query_ocular_audio_evidence(
+    url: str,
+    modalities: list[str] | None = None,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+    query: str = "",
+    limit: int = 100,
+) -> str:
+    """Query canonical evidence records by modality, timestamp range, and text."""
+    try:
+        if start_seconds is not None and (not math.isfinite(float(start_seconds)) or start_seconds < 0):
+            raise ValueError("start_seconds must be a finite non-negative number.")
+        if end_seconds is not None and (not math.isfinite(float(end_seconds)) or end_seconds < 0):
+            raise ValueError("end_seconds must be a finite non-negative number.")
+        if start_seconds is not None and end_seconds is not None and end_seconds < start_seconds:
+            raise ValueError("end_seconds must be greater than or equal to start_seconds.")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
+            raise ValueError("limit must be an integer between 1 and 1000.")
+        cache_id = _cache_id(url)
+        cached = read_from_cache(cache_id)
+        _refresh_canonical_evidence(cache_id, cached)
+        store = _get_evidence_store()
+        manifest = store.read(cache_id)
+        if not manifest:
+            return json.dumps({
+                "source_id": cache_id, "record_count": 0, "results": [],
+                "message": "No canonical evidence is indexed for this source yet.",
+            }, ensure_ascii=False, indent=2)
+        results = store.query(
+            cache_id, modalities=modalities, start_seconds=start_seconds,
+            end_seconds=end_seconds, text_query=query, limit=limit,
+        )
+        return json.dumps({
+            "source_id": cache_id,
+            "schema_version": manifest["schema_version"],
+            "content_digest": manifest["content_digest"],
+            "record_count": manifest["record_count"],
+            "result_count": len(results),
+            "filters": {
+                "modalities": modalities, "start_seconds": start_seconds,
+                "end_seconds": end_seconds, "query": query.strip(), "limit": limit,
+            },
+            "results": [record.to_dict() for record in results],
+        }, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+def _canonical_transcript_segments(cache_id: str, cached: dict | None = None) -> list:
+    """Read timestamped transcript segments from the canonical persisted manifest."""
+    _refresh_canonical_evidence(cache_id, cached)
+    manifest = _get_evidence_store().read(cache_id)
+    records = manifest["records"] if manifest else []
+    from evidence_index import EvidenceSegment
+    return [
+        EvidenceSegment(
+            evidence_id=record.evidence_id,
+            start_seconds=record.start_seconds,
+            end_seconds=record.end_seconds,
+            text=record.text,
+            source="transcript",
+            chapter=str(record.metadata.get("chapter", "")),
+        )
+        for record in records if record.modality == "transcript"
+    ]
+
+
 async def _ensure_evidence_cache(url: str, use_local_whisper: bool = True) -> tuple[str, dict]:
-    """Return cached transcript evidence, populating the cache when necessary."""
+    """Return cached transcript evidence and refresh its canonical manifest."""
     cache_id = _cache_id(url)
     cached = read_from_cache(cache_id)
     if cached:
+        _refresh_canonical_evidence(cache_id, cached)
         return cache_id, cached
     await get_ocular_audio_transcript(url, use_local_whisper=use_local_whisper)
     cached = read_from_cache(cache_id)
     if not cached:
         raise RuntimeError("Transcript evidence is unavailable; run transcription successfully first.")
+    _refresh_canonical_evidence(cache_id, cached)
     return cache_id, cached
 
 
@@ -2387,15 +2711,7 @@ async def search_ocular_audio_video(
     try:
         cache_id, cached = await _ensure_evidence_cache(url, use_local_whisper)
         metadata = cached.get("metadata", {})
-        source = metadata.get("source", {})
-        duration = _parse_duration_str(metadata.get("duration", "0"))
-        if not duration:
-            duration = float(source.get("duration_seconds") or 0)
-        segments = build_evidence_segments(
-            cached.get("transcript", ""),
-            duration_seconds=duration,
-            chapters=metadata.get("chapters", []),
-        )
+        segments = _canonical_transcript_segments(cache_id, cached)
         results = search_evidence(segments, query, top_k=top_k, min_score=min_score)
         payload = {
             "source_id": cache_id,
@@ -2431,12 +2747,7 @@ async def get_ocular_audio_video_timeline(
     try:
         cache_id, cached = await _ensure_evidence_cache(url, use_local_whisper)
         metadata = cached.get("metadata", {})
-        duration = _parse_duration_str(metadata.get("duration", "0"))
-        segments = build_evidence_segments(
-            cached.get("transcript", ""),
-            duration_seconds=duration,
-            chapters=metadata.get("chapters", []),
-        )
+        segments = _canonical_transcript_segments(cache_id, cached)
         end = None if end_seconds < 0 else max(start_seconds, end_seconds)
         selected = timeline_window(segments, start_seconds, end)
         return json.dumps({
@@ -2465,12 +2776,7 @@ async def inspect_ocular_audio_moment(
     try:
         cache_id, cached = await _ensure_evidence_cache(url, use_local_whisper)
         metadata = cached.get("metadata", {})
-        duration = _parse_duration_str(metadata.get("duration", "0"))
-        segments = build_evidence_segments(
-            cached.get("transcript", ""),
-            duration_seconds=duration,
-            chapters=metadata.get("chapters", []),
-        )
+        segments = _canonical_transcript_segments(cache_id, cached)
         nearest = nearest_evidence(segments, timestamp_seconds)
         start = max(0, timestamp_seconds - max(0, window_seconds))
         end = timestamp_seconds + max(0, window_seconds)
@@ -2514,12 +2820,7 @@ async def search_ocular_audio_cache(query: str, top_k: int = 10) -> str:
         if not cached:
             continue
         metadata = cached.get("metadata", {})
-        duration = _parse_duration_str(metadata.get("duration", "0"))
-        segments = build_evidence_segments(
-            cached.get("transcript", ""),
-            duration_seconds=duration,
-            chapters=metadata.get("chapters", []),
-        )
+        segments = _canonical_transcript_segments(cache_file.stem, cached)
         for item in search_evidence(segments, query, top_k=min(top_k, 10)):
             title = metadata.get("title", "Unknown")
             matches.append({
@@ -2780,6 +3081,22 @@ if __name__ == "__main__":
             idx = sys.argv.index("--analysis-depth")
             if idx + 1 < len(sys.argv):
                 analysis_depth = sys.argv[idx + 1]
+        capability_mode = "auto"
+        if "--mode" in sys.argv:
+            idx = sys.argv.index("--mode")
+            if idx + 1 < len(sys.argv):
+                capability_mode = sys.argv[idx + 1]
+        budget_seconds = None
+        if "--budget-seconds" in sys.argv:
+            idx = sys.argv.index("--budget-seconds")
+            try:
+                budget_seconds = float(sys.argv[idx + 1])
+            except (IndexError, ValueError):
+                print("--budget-seconds must be a finite number between 0.001 and 900.", file=sys.stderr)
+                sys.exit(1)
+            if not 0.001 <= budget_seconds <= 900:
+                print("--budget-seconds must be a finite number between 0.001 and 900.", file=sys.stderr)
+                sys.exit(1)
         force_mode = "--force" in sys.argv
         verbose_mode = "--verbose" in sys.argv
         quiet_mode = "--quiet" in sys.argv
@@ -2797,20 +3114,24 @@ if __name__ == "__main__":
         async def run_standalone():
             start_time = time.time()
             log.info("Processing target resource: %s (detail: %s)", target_url, detail_level)
+            try:
+                resolved_capability_mode = normalize_mode(capability_mode)
+            except ValueError as exc:
+                print(json.dumps({"error": str(exc)}))
+                return
 
-            # ── Phase 3 visual commands ───────────────────────────────────
+            # ── Mode-aware media commands ─────────────────────────────────
             if visual_index_mode:
                 print(await index_ocular_audio_video_visuals(
-                    url=target_url,
-                    enable_ocr=enable_ocr,
-                    force=force_mode,
+                    url=target_url, enable_ocr=enable_ocr,
+                    force=force_mode, mode=resolved_capability_mode, budget_seconds=budget_seconds,
                 ))
                 return
 
             if visual_search_query is not None:
                 print(await search_ocular_audio_visuals(
-                    url=target_url,
-                    query=visual_search_query,
+                    url=target_url, query=visual_search_query,
+                    mode=resolved_capability_mode, budget_seconds=budget_seconds,
                 ))
                 return
 
@@ -2839,10 +3160,9 @@ if __name__ == "__main__":
 
             if multimodal_search_query is not None or multimodal_mode:
                 print(await analyze_ocular_audio_multimodal(
-                    url=target_url,
-                    query=multimodal_search_query or "",
-                    enable_ocr=True,
-                    use_local_whisper=True,
+                    url=target_url, query=multimodal_search_query or "",
+                    enable_ocr=True, use_local_whisper=True, mode=resolved_capability_mode,
+                    budget_seconds=budget_seconds,
                 ))
                 return
 
@@ -2857,9 +3177,14 @@ if __name__ == "__main__":
                 idx = sys.argv.index(flag)
                 query_value = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else ""
                 if flag == "--plan":
-                    print(await plan_ocular_audio_analysis(query=query_value))
+                    print(await plan_ocular_audio_analysis(
+                        query=query_value, mode=resolved_capability_mode, budget_seconds=budget_seconds,
+                    ))
                 else:
-                    print(await run_ocular_audio_analysis(url=target_url, query=query_value))
+                    print(await run_ocular_audio_analysis(
+                        url=target_url, query=query_value, mode=resolved_capability_mode,
+                        budget_seconds=budget_seconds,
+                    ))
                 return
 
             if batch_manifest_file:
@@ -2870,10 +3195,8 @@ if __name__ == "__main__":
                     return
                 if batch_compare_mode:
                     print(await compare_ocular_audio_videos(
-                        sources_json=manifest_text,
-                        query="",
-                        enable_ocr=enable_ocr,
-                        use_local_whisper=True,
+                        sources_json=manifest_text, query="", enable_ocr=enable_ocr,
+                        use_local_whisper=True, mode=resolved_capability_mode, budget_seconds=budget_seconds,
                     ))
                 else:
                     print(await analyze_ocular_audio_batch(
@@ -2882,6 +3205,7 @@ if __name__ == "__main__":
                         enable_ocr=enable_ocr,
                         use_local_whisper=True,
                         force=force_mode,
+                        mode=resolved_capability_mode, budget_seconds=budget_seconds,
                     ))
                 return
 
@@ -2955,7 +3279,9 @@ if __name__ == "__main__":
                 detail_level=detail_level,
                 use_local_whisper=True,
                 enable_ocr=enable_ocr,
-                analysis_depth=analysis_depth
+                analysis_depth=analysis_depth,
+                capability_mode=resolved_capability_mode,
+                budget_seconds=budget_seconds,
             )
 
             output_lines = []
