@@ -2861,6 +2861,11 @@ if __name__ == "__main__":
             idx = sys.argv.index("--analysis-depth")
             if idx + 1 < len(sys.argv):
                 analysis_depth = sys.argv[idx + 1]
+        capability_mode = "auto"
+        if "--mode" in sys.argv:
+            idx = sys.argv.index("--mode")
+            if idx + 1 < len(sys.argv):
+                capability_mode = sys.argv[idx + 1]
         force_mode = "--force" in sys.argv
         verbose_mode = "--verbose" in sys.argv
         quiet_mode = "--quiet" in sys.argv
@@ -2878,13 +2883,17 @@ if __name__ == "__main__":
         async def run_standalone():
             start_time = time.time()
             log.info("Processing target resource: %s (detail: %s)", target_url, detail_level)
+            try:
+                resolved_capability_mode = normalize_mode(capability_mode)
+            except ValueError as exc:
+                print(json.dumps({"error": str(exc)}))
+                return
 
-            # ── Phase 3 visual commands ───────────────────────────────────
+            # ── Mode-aware media commands ─────────────────────────────────
             if visual_index_mode:
                 print(await index_ocular_audio_video_visuals(
-                    url=target_url,
-                    enable_ocr=enable_ocr,
-                    force=force_mode,
+                    url=target_url, enable_ocr=enable_ocr,
+                    force=force_mode, mode=resolved_capability_mode,
                 ))
                 return
 
@@ -2920,10 +2929,8 @@ if __name__ == "__main__":
 
             if multimodal_search_query is not None or multimodal_mode:
                 print(await analyze_ocular_audio_multimodal(
-                    url=target_url,
-                    query=multimodal_search_query or "",
-                    enable_ocr=True,
-                    use_local_whisper=True,
+                    url=target_url, query=multimodal_search_query or "",
+                    enable_ocr=True, use_local_whisper=True, mode=resolved_capability_mode,
                 ))
                 return
 
@@ -2938,9 +2945,9 @@ if __name__ == "__main__":
                 idx = sys.argv.index(flag)
                 query_value = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else ""
                 if flag == "--plan":
-                    print(await plan_ocular_audio_analysis(query=query_value))
+                    print(await plan_ocular_audio_analysis(query=query_value, mode=resolved_capability_mode))
                 else:
-                    print(await run_ocular_audio_analysis(url=target_url, query=query_value))
+                    print(await run_ocular_audio_analysis(url=target_url, query=query_value, mode=resolved_capability_mode))
                 return
 
             if batch_manifest_file:
@@ -2963,6 +2970,7 @@ if __name__ == "__main__":
                         enable_ocr=enable_ocr,
                         use_local_whisper=True,
                         force=force_mode,
+                        mode=resolved_capability_mode,
                     ))
                 return
 
@@ -3036,7 +3044,8 @@ if __name__ == "__main__":
                 detail_level=detail_level,
                 use_local_whisper=True,
                 enable_ocr=enable_ocr,
-                analysis_depth=analysis_depth
+                analysis_depth=analysis_depth,
+                capability_mode=resolved_capability_mode,
             )
 
             output_lines = []
