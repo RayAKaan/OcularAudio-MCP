@@ -17,6 +17,7 @@ import time
 from typing import Any, Awaitable, Callable
 
 from runtime_ops import GLOBAL_METRICS, OperationTimer, rotate_audit_log
+from capability_modes import MODE_POLICIES, build_mode_decision
 
 
 MAX_QUERY_LENGTH = 1000
@@ -66,6 +67,7 @@ class ExecutionPlan:
     query: str
     steps: list[PlanStep]
     policy: ExecutionPolicy
+    mode_decision: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +76,7 @@ class ExecutionPlan:
             "query": self.query,
             "steps": [step.to_dict() for step in self.steps],
             "policy": asdict(self.policy),
+            "mode_decision": self.mode_decision,
         }
 
 
@@ -113,8 +116,13 @@ def classify_intent(query: str, multi_video: bool = False) -> str:
     return "inspect_video"
 
 
-def _plan_id(intent: str, query: str, steps: list[PlanStep]) -> str:
-    payload = {"intent": intent, "query": query, "steps": [asdict(step) for step in steps]}
+def _plan_id(intent: str, query: str, steps: list[PlanStep], mode_decision: dict[str, Any]) -> str:
+    payload = {
+        "intent": intent, "query": query,
+        "steps": [asdict(step) for step in steps],
+        "mode": mode_decision.get("resolved_mode"),
+        "limits": mode_decision.get("limits"),
+    }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:24]
 
 
@@ -123,15 +131,39 @@ def build_execution_plan(
     *,
     multi_video: bool = False,
     policy: ExecutionPolicy | None = None,
+    mode: str = "auto",
+    source_count: int = 1,
+    estimated_duration_seconds: float | None = None,
+    available_capabilities: dict[str, Any] | None = None,
+    budget_seconds: float | None = None,
 ) -> ExecutionPlan:
     query = normalize_query(query)
-    policy = (policy or ExecutionPolicy()).validate()
+    requested_policy = (policy or ExecutionPolicy()).validate()
     intent = classify_intent(query, multi_video)
+    requested_features = {
+        "inspect_visual": ("visual",),
+        "inspect_ocr": ("ocr", "visual"),
+        "search_videos": ("batch",),
+        "compare_videos": ("batch",),
+    }.get(intent, ())
+    decision = build_mode_decision(
+        mode, query, source_count=source_count,
+        estimated_duration_seconds=estimated_duration_seconds,
+        available_capabilities=available_capabilities, budget_seconds=budget_seconds,
+        requested_features=requested_features, multi_video=multi_video,
+    ).to_dict()
+    mode_policy = MODE_POLICIES[decision["resolved_mode"]]
+    effective_policy = ExecutionPolicy(
+        timeout_seconds=min(requested_policy.timeout_seconds, decision["limits"]["max_runtime_seconds"]),
+        max_retries=min(requested_policy.max_retries, mode_policy.max_retries),
+        backoff_seconds=requested_policy.backoff_seconds,
+        max_steps=min(requested_policy.max_steps, mode_policy.max_steps),
+    ).validate()
     operations = {
         "inspect_video": [("inspect_source", "Establish source capabilities before expensive processing.")],
-        "search_video": [("search_hybrid", "Use transcript and visual evidence for broad evidence retrieval.")],
+        "search_video": [("search_hybrid", "Retrieve ranked timestamped evidence for the query.")],
         "inspect_visual": [
-            ("search_hybrid", "Locate relevant evidence before visual inspection."),
+            ("search_hybrid", "Locate relevant transcript evidence before visual inspection."),
             ("inspect_moment", "Inspect the strongest timestamp with targeted visual evidence."),
         ],
         "inspect_ocr": [
@@ -142,12 +174,29 @@ def build_execution_plan(
         "search_videos": [("search_batch", "Search multimodal evidence across all supplied sources.")],
         "compare_videos": [("compare_batch", "Run the same evidence contract across sources for comparison.")],
     }
-    raw_steps = operations[intent]
+    raw_steps = list(operations[intent])
+    adjustments = list(decision["adjustments"])
+    if decision["resolved_mode"] == "lite" and intent in {"inspect_visual", "inspect_ocr"}:
+        raw_steps = [("search_hybrid", "Lite mode falls back to transcript evidence instead of expensive visual/OCR processing.")]
+        adjustments.append(f"{intent} was downgraded to transcript retrieval by Lite mode.")
+    if decision["resolved_mode"] == "lite" and intent in {"search_videos", "compare_videos"}:
+        raise ValueError("Lite mode does not support multi-source analysis; choose intelligence, deep, or auto.")
+    if decision["resolved_mode"] in {"intelligence", "deep"}:
+        if intent == "search_video":
+            raw_steps.append(("timeline", "Add a compact timestamp-oriented view to the ranked evidence."))
+        elif intent == "timeline":
+            raw_steps.append(("search_hybrid", "Add query-ranked evidence to complement the timeline."))
+    if decision["resolved_mode"] == "deep":
+        if intent in {"search_video", "inspect_visual", "inspect_ocr", "timeline"}:
+            raw_steps.append(("inspect_moment", "Deep mode verifies a high-ranking moment against the source."))
+        elif intent == "inspect_video" and query:
+            raw_steps.append(("search_hybrid", "Deep mode supplements source metadata with evidence retrieval."))
     steps = [
         PlanStep(step_id=f"s{idx:02d}", operation=op, reason=reason)
         for idx, (op, reason) in enumerate(raw_steps, 1)
-    ][: policy.max_steps]
-    return ExecutionPlan(_plan_id(intent, query, steps), intent, query, steps, policy)
+    ][: effective_policy.max_steps]
+    decision["adjustments"] = adjustments
+    return ExecutionPlan(_plan_id(intent, query, steps, decision), intent, query, steps, effective_policy, decision)
 
 
 async def execute_with_policy(

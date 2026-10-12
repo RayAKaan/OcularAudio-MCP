@@ -35,6 +35,25 @@ class AgenticIndexTests(unittest.TestCase):
         self.assertLessEqual(len(plan_a.steps), 8)
         self.assertEqual("search_hybrid", plan_a.steps[0].operation)
 
+    def test_mode_changes_plan_depth_and_limits(self):
+        lite = build_execution_plan("find revenue", mode="lite")
+        intelligence = build_execution_plan("find revenue", mode="intelligence")
+        deep = build_execution_plan("find revenue", mode="deep")
+        self.assertEqual("lite", lite.mode_decision["resolved_mode"])
+        self.assertEqual("intelligence", intelligence.mode_decision["resolved_mode"])
+        self.assertEqual("deep", deep.mode_decision["resolved_mode"])
+        self.assertLess(lite.mode_decision["limits"]["max_evidence"], deep.mode_decision["limits"]["max_evidence"])
+        self.assertLess(len(lite.steps), len(deep.steps))
+        self.assertEqual(0, lite.policy.max_retries)
+        self.assertEqual(2, deep.policy.max_retries)
+
+    def test_auto_mode_uses_source_count_and_budget(self):
+        plan = build_execution_plan("compare these", multi_video=True, source_count=12)
+        self.assertEqual("deep", plan.mode_decision["resolved_mode"])
+        self.assertEqual(32, plan.mode_decision["limits"]["max_sources"])
+        budgeted = build_execution_plan("find pricing", budget_seconds=10)
+        self.assertEqual(10, budgeted.policy.timeout_seconds)
+
     def test_policy_validation(self):
         self.assertEqual(2, ExecutionPolicy(max_retries=2).validate().max_retries)
         with self.assertRaises(ValueError):
