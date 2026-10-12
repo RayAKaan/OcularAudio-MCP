@@ -76,6 +76,37 @@ class CanonicalEvidenceTests(unittest.TestCase):
             from evidence_store import validate_record
             validate_record(record)
 
+    def test_rejects_modified_canonical_identity(self):
+        from evidence_store import validate_record
+        record = build_canonical_evidence("source123", "[00:01] verified evidence")[0]
+        tampered = EvidenceRecord(
+            evidence_id="ev_" + "f" * 32,
+            source_id=record.source_id,
+            modality=record.modality,
+            start_seconds=record.start_seconds,
+            end_seconds=record.end_seconds,
+            text=record.text,
+            content_hash=record.content_hash,
+            provenance=record.provenance,
+            metadata=record.metadata,
+        )
+        with self.assertRaisesRegex(ValueError, "canonical identity"):
+            validate_record(tampered)
+
+    def test_fractional_timestamps_round_trip_with_stable_ids(self):
+        records = build_canonical_evidence(
+            "source123", visual_frames=[{
+                "frame_id": "fractional", "timestamp_seconds": 1.23456,
+                "description": "Frame at a fractional timestamp",
+            }],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            store = EvidenceStore(directory)
+            store.save("source123", records)
+            loaded = store.read("source123")
+            self.assertEqual(records[0].evidence_id, loaded["records"][0].evidence_id)
+            self.assertEqual(1.235, loaded["records"][0].start_seconds)
+
     def test_atomic_manifest_round_trip_and_query(self):
         records = build_canonical_evidence(
             "source123", self.transcript, 60, self.chapters, self.frames,
