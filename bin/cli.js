@@ -116,6 +116,7 @@ OPTIONS
                             auto      — Adapts to video length and content
 
   --mode <mode>              Capability mode: auto, lite, intelligence, deep
+  --budget-seconds <n>      Bound execution time (0.001-900 seconds)
   --analysis-depth <level> Universal ingestion depth
                             glance      — Minimal, fastest
                             understand  — Recommended default
@@ -181,6 +182,7 @@ const args = process.argv.slice(2);
 let detailLevel = 'auto';
 let analysisDepth = 'understand';
 let capabilityMode = 'auto';
+let budgetSeconds = null;
 let targetUrl = null;
 let stdoutMode = false;
 let noClipboard = false;
@@ -379,6 +381,15 @@ for (let i = 0; i < args.length; i++) {
     i++;
     continue;
   }
+  if (arg === '--budget-seconds' && i + 1 < args.length) {
+    budgetSeconds = Number(args[i + 1]);
+    if (!Number.isFinite(budgetSeconds) || budgetSeconds < 0.001 || budgetSeconds > 900) {
+      console.error('[ERROR] --budget-seconds must be between 0.001 and 900.');
+      process.exit(1);
+    }
+    i++;
+    continue;
+  }
   if (arg === '--output' && i + 1 < args.length) {
     outputFile = args[i + 1];
     i++;
@@ -530,6 +541,7 @@ if (agenticQuery !== null) pyArgs.push('--agentic', agenticQuery);
 if (healthMode) pyArgs.push('--health');
 if (auditMode) pyArgs.push('--audit');
 if (forceMode) pyArgs.push('--force');
+if (budgetSeconds !== null) pyArgs.push('--budget-seconds', String(budgetSeconds));
 if (verboseMode) pyArgs.push('--verbose');
 if (quietMode) pyArgs.push('--quiet');
 if (outputFile) {
