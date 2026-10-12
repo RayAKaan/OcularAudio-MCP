@@ -1575,6 +1575,7 @@ async def analyze_ocular_audio_multimodal(
             visual_result = await index_ocular_audio_video_visuals(
                 url=url, interval_seconds=controls["interval_seconds"],
                 enable_ocr=controls["enable_ocr"], force=True, mode=decision["resolved_mode"],
+                budget_seconds=decision["limits"]["max_runtime_seconds"],
             )
             existing = json.loads(visual_result)
             if existing.get("error"):
@@ -1721,20 +1722,35 @@ async def run_ocular_audio_analysis(
             if step.operation == "inspect_source":
                 worker = lambda: inspect_ocular_audio_source(url)
             elif step.operation == "search_hybrid":
-                worker = lambda: search_ocular_audio_hybrid(url=url, query=query, top_k=top_k, mode=resolved_mode)
+                worker = lambda: search_ocular_audio_hybrid(
+                    url=url, query=query, top_k=top_k, mode=resolved_mode,
+                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                )
             elif step.operation == "inspect_moment":
-                evidence = await search_ocular_audio_hybrid(url=url, query=query, top_k=1, mode=resolved_mode)
+                evidence = await search_ocular_audio_hybrid(
+                    url=url, query=query, top_k=1, mode=resolved_mode,
+                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                )
                 payload = json.loads(evidence)
                 timestamp = float((payload.get("results") or [{}])[0].get("start_seconds", 0))
                 worker = lambda: inspect_ocular_audio_moment(url=url, timestamp_seconds=timestamp)
             elif step.operation == "search_visual":
-                worker = lambda: search_ocular_audio_visuals(url=url, query=query, top_k=top_k, mode=resolved_mode)
+                worker = lambda: search_ocular_audio_visuals(
+                    url=url, query=query, top_k=top_k, mode=resolved_mode,
+                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                )
             elif step.operation == "timeline":
                 worker = lambda: get_ocular_audio_video_timeline(url=url)
             elif step.operation == "search_batch":
-                worker = lambda: search_ocular_audio_videos(sources_json=url, query=query, top_k=top_k, mode=resolved_mode)
+                worker = lambda: search_ocular_audio_videos(
+                    sources_json=url, query=query, top_k=top_k, mode=resolved_mode,
+                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                )
             elif step.operation == "compare_batch":
-                worker = lambda: compare_ocular_audio_videos(sources_json=url, query=query, mode=resolved_mode)
+                worker = lambda: compare_ocular_audio_videos(
+                    sources_json=url, query=query, mode=resolved_mode,
+                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                )
             else:
                 raise ValueError(f"Unsupported plan operation: {step.operation}")
             result, audit = await execute_with_policy(step.operation, worker, effective_policy)
@@ -2904,6 +2920,14 @@ if __name__ == "__main__":
             idx = sys.argv.index("--mode")
             if idx + 1 < len(sys.argv):
                 capability_mode = sys.argv[idx + 1]
+        budget_seconds = None
+        if "--budget-seconds" in sys.argv:
+            idx = sys.argv.index("--budget-seconds")
+            try:
+                budget_seconds = float(sys.argv[idx + 1])
+            except (IndexError, ValueError):
+                print(json.dumps({"error": "--budget-seconds must be a finite number between 0.001 and 900."}))
+                return
         force_mode = "--force" in sys.argv
         verbose_mode = "--verbose" in sys.argv
         quiet_mode = "--quiet" in sys.argv
@@ -2931,13 +2955,14 @@ if __name__ == "__main__":
             if visual_index_mode:
                 print(await index_ocular_audio_video_visuals(
                     url=target_url, enable_ocr=enable_ocr,
-                    force=force_mode, mode=resolved_capability_mode,
+                    force=force_mode, mode=resolved_capability_mode, budget_seconds=budget_seconds,
                 ))
                 return
 
             if visual_search_query is not None:
                 print(await search_ocular_audio_visuals(
-                    url=target_url, query=visual_search_query, mode=resolved_capability_mode,
+                    url=target_url, query=visual_search_query,
+                    mode=resolved_capability_mode, budget_seconds=budget_seconds,
                 ))
                 return
 
@@ -2968,6 +2993,7 @@ if __name__ == "__main__":
                 print(await analyze_ocular_audio_multimodal(
                     url=target_url, query=multimodal_search_query or "",
                     enable_ocr=True, use_local_whisper=True, mode=resolved_capability_mode,
+                    budget_seconds=budget_seconds,
                 ))
                 return
 
@@ -2982,9 +3008,14 @@ if __name__ == "__main__":
                 idx = sys.argv.index(flag)
                 query_value = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else ""
                 if flag == "--plan":
-                    print(await plan_ocular_audio_analysis(query=query_value, mode=resolved_capability_mode))
+                    print(await plan_ocular_audio_analysis(
+                        query=query_value, mode=resolved_capability_mode, budget_seconds=budget_seconds,
+                    ))
                 else:
-                    print(await run_ocular_audio_analysis(url=target_url, query=query_value, mode=resolved_capability_mode))
+                    print(await run_ocular_audio_analysis(
+                        url=target_url, query=query_value, mode=resolved_capability_mode,
+                        budget_seconds=budget_seconds,
+                    ))
                 return
 
             if batch_manifest_file:
@@ -2996,7 +3027,7 @@ if __name__ == "__main__":
                 if batch_compare_mode:
                     print(await compare_ocular_audio_videos(
                         sources_json=manifest_text, query="", enable_ocr=enable_ocr,
-                        use_local_whisper=True, mode=resolved_capability_mode,
+                        use_local_whisper=True, mode=resolved_capability_mode, budget_seconds=budget_seconds,
                     ))
                 else:
                     print(await analyze_ocular_audio_batch(
@@ -3005,7 +3036,7 @@ if __name__ == "__main__":
                         enable_ocr=enable_ocr,
                         use_local_whisper=True,
                         force=force_mode,
-                        mode=resolved_capability_mode,
+                        mode=resolved_capability_mode, budget_seconds=budget_seconds,
                     ))
                 return
 
@@ -3081,6 +3112,7 @@ if __name__ == "__main__":
                 enable_ocr=enable_ocr,
                 analysis_depth=analysis_depth,
                 capability_mode=resolved_capability_mode,
+                budget_seconds=budget_seconds,
             )
 
             output_lines = []
