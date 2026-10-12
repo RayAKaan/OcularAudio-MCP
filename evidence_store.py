@@ -106,6 +106,14 @@ def validate_record(record: EvidenceRecord) -> None:
         raise ValueError("Evidence content hash does not match its text.")
     if not isinstance(record.provenance, dict) or not isinstance(record.metadata, dict):
         raise ValueError("Evidence provenance and metadata must be objects.")
+    locator = record.provenance.get("locator")
+    if locator is not None:
+        expected_id = _stable_id(
+            record.source_id, record.modality, record.start_seconds,
+            record.end_seconds, record.text, str(locator),
+        )
+        if record.evidence_id != expected_id:
+            raise ValueError("Evidence ID does not match its canonical identity.")
 
 
 def _make_record(
@@ -132,7 +140,7 @@ def _make_record(
         end_seconds=round(max(start, end), 3),
         text=clean_text,
         content_hash=_text_hash(clean_text),
-        provenance=dict(provenance or {}),
+        provenance={**dict(provenance or {}), "locator": locator},
         metadata=dict(metadata or {}),
     )
     validate_record(record)
