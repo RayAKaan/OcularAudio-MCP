@@ -28,6 +28,7 @@ if (isNewer(registryVersion, pkg.version)) {
 }
 if (pkg.name !== 'ocular-audio-mcp' || pkg.bin?.['ocular-audio'] !== './bin/cli.js') throw new Error('NPM package metadata is invalid');
 if (!pkg.files.includes('ocular_audio_mcp.py')) throw new Error('Python server missing from package allowlist');
+if (!pkg.files.includes('evidence_store.py') || !fs.existsSync(path.join(root, 'evidence_store.py'))) throw new Error('Canonical evidence store missing from package allowlist');
 for (const required of ['README.md','LICENSE','requirements.txt']) if (!fs.existsSync(path.join(root, required))) throw new Error(required+' missing');
 execFileSync(process.execPath, ['--check', path.join(root, 'bin', 'cli.js')], {stdio:'ignore'});
 console.log('OcularAudio source v' + pkg.version + ': metadata OK; MCP registry manifest targets v' + registryVersion + '.');
