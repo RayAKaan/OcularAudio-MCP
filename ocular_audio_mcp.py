@@ -1338,10 +1338,24 @@ async def search_ocular_audio_visuals(
             }, ensure_ascii=False)
         frames = frames_from_payload(index.get("frames", []))
         results = search_visual_frames(frames, query, top_k=controls["top_k"], min_score=min_score)
+        frame_evidence = _canonical_frame_evidence_lookup(cache_id)
+        result_payloads = []
+        for item in results:
+            payload = item.to_dict()
+            refs = frame_evidence.get(item.frame_id, {})
+            visual_record = refs.get("visual")
+            ocr_record = refs.get("ocr")
+            payload["evidence_id"] = visual_record.evidence_id if visual_record else None
+            payload["ocr_evidence_id"] = ocr_record.evidence_id if ocr_record else None
+            payload["provenance"] = {
+                "source_id": cache_id, "frame_id": item.frame_id,
+                "visual_artifact": "visual_index",
+            }
+            result_payloads.append(payload)
         return json.dumps({
             "source_id": cache_id, "url": url, "query": query.strip(),
             "mode_decision": decision, "result_count": len(results),
-            "results": [item.to_dict() for item in results],
+            "results": result_payloads,
         }, ensure_ascii=False, indent=2)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
@@ -1601,6 +1615,22 @@ async def analyze_ocular_audio_multimodal(
         frames = frames_from_payload((existing or {}).get("frames", []))
         moments = build_multimodal_moments(segments, frames, window_seconds=window_seconds)
         ranked = rank_multimodal_moments(moments, query=query, top_k=controls["top_k"])
+        frame_evidence = _canonical_frame_evidence_lookup(cache_id)
+        result_payloads = []
+        for moment in ranked:
+            payload = describe_moment(moment)
+            for frame in payload.get("visual_frames", []):
+                refs = frame_evidence.get(str(frame.get("frame_id", "")), {})
+                visual_record = refs.get("visual")
+                ocr_record = refs.get("ocr")
+                frame["evidence_id"] = visual_record.evidence_id if visual_record else None
+                frame["ocr_evidence_id"] = ocr_record.evidence_id if ocr_record else None
+                frame["provenance"] = {
+                    "source_id": cache_id,
+                    "frame_id": frame.get("frame_id"),
+                    "visual_artifact": "visual_index",
+                }
+            result_payloads.append(payload)
         return json.dumps({
             "source_id": cache_id, "url": url, "title": metadata.get("title", "Unknown"),
             "query": query.strip(), "mode_decision": decision,
@@ -1610,7 +1640,7 @@ async def analyze_ocular_audio_multimodal(
             },
             "modality_contract": ["transcript", "visual", "ocr"],
             "moment_count": len(ranked),
-            "results": [describe_moment(moment) for moment in ranked],
+            "results": result_payloads,
         }, ensure_ascii=False, indent=2)
     except asyncio.TimeoutError:
         return json.dumps({"error": "Multimodal analysis exceeded the selected mode runtime budget."}, ensure_ascii=False)
@@ -2554,6 +2584,21 @@ def _refresh_canonical_evidence(cache_id: str, cached: dict | None = None) -> li
     })
     manifest = _get_evidence_store().read(cache_id)
     return manifest["records"] if manifest else []
+
+
+def _canonical_frame_evidence_lookup(cache_id: str) -> dict[str, dict[str, EvidenceRecord]]:
+    """Map frame IDs to their canonical visual and OCR evidence records."""
+    _refresh_canonical_evidence(cache_id, read_from_cache(cache_id))
+    manifest = _get_evidence_store().read(cache_id)
+    lookup: dict[str, dict[str, EvidenceRecord]] = {}
+    if not manifest:
+        return lookup
+    for record in manifest["records"]:
+        frame_id = record.provenance.get("frame_id")
+        if not frame_id or record.modality not in {"visual", "ocr"}:
+            continue
+        lookup.setdefault(str(frame_id), {})[record.modality] = record
+    return lookup
 
 
 @mcp.tool(annotations=tool_annotations("query_ocular_audio_evidence"))
