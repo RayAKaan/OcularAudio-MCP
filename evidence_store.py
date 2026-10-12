@@ -46,16 +46,25 @@ class EvidenceRecord:
     def from_dict(cls, payload: dict[str, Any]) -> "EvidenceRecord":
         if not isinstance(payload, dict):
             raise ValueError("Evidence record must be an object.")
+        provenance = payload.get("provenance", {})
+        metadata = payload.get("metadata", {})
+        if not isinstance(provenance, dict) or not isinstance(metadata, dict):
+            raise ValueError("Evidence provenance and metadata must be objects.")
+        try:
+            start_seconds = float(payload.get("start_seconds", 0))
+            end_seconds = float(payload.get("end_seconds", 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Evidence timestamps must be numeric.") from exc
         record = cls(
             evidence_id=str(payload.get("evidence_id", "")),
             source_id=str(payload.get("source_id", "")),
             modality=str(payload.get("modality", "")),
-            start_seconds=payload.get("start_seconds", 0),
-            end_seconds=payload.get("end_seconds", 0),
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
             text=str(payload.get("text", "")),
             content_hash=str(payload.get("content_hash", "")),
-            provenance=payload.get("provenance") if isinstance(payload.get("provenance"), dict) else {},
-            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+            provenance=provenance,
+            metadata=metadata,
         )
         validate_record(record)
         return record
@@ -92,13 +101,18 @@ def _stable_id(
 def validate_record(record: EvidenceRecord) -> None:
     if not SOURCE_ID_RE.fullmatch(record.source_id):
         raise ValueError("source_id must be a safe 1-128 character identifier.")
-    if not record.evidence_id.startswith("ev_") or len(record.evidence_id) != 35:
-        raise ValueError("evidence_id must be a stable ev_ identifier.")
+    if not re.fullmatch(r"ev_[0-9a-f]{32}", record.evidence_id):
+        raise ValueError("evidence_id must be a stable lowercase hexadecimal ev_ identifier.")
     if record.modality not in ALLOWED_MODALITIES:
         raise ValueError(f"Unsupported evidence modality: {record.modality!r}.")
-    if not math.isfinite(float(record.start_seconds)) or not math.isfinite(float(record.end_seconds)):
+    try:
+        start_seconds = float(record.start_seconds)
+        end_seconds = float(record.end_seconds)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Evidence timestamps must be numeric.") from exc
+    if not math.isfinite(start_seconds) or not math.isfinite(end_seconds):
         raise ValueError("Evidence timestamps must be finite.")
-    if float(record.start_seconds) < 0 or float(record.end_seconds) < float(record.start_seconds):
+    if start_seconds < 0 or end_seconds < start_seconds:
         raise ValueError("Evidence timestamps must be non-negative and end >= start.")
     if not record.text.strip():
         raise ValueError("Evidence text must not be empty.")
@@ -370,10 +384,16 @@ class EvidenceStore:
         allowed = set(modalities) if modalities is not None else None
         if allowed is not None and not allowed.issubset(ALLOWED_MODALITIES):
             raise ValueError("Query contains an unsupported evidence modality.")
-        start = None if start_seconds is None else max(0.0, float(start_seconds))
-        end = None if end_seconds is None else max(0.0, float(end_seconds))
+        start = None if start_seconds is None else float(start_seconds)
+        end = None if end_seconds is None else float(end_seconds)
+        if start is not None and (not math.isfinite(start) or start < 0):
+            raise ValueError("start_seconds must be finite and non-negative.")
+        if end is not None and (not math.isfinite(end) or end < 0):
+            raise ValueError("end_seconds must be finite and non-negative.")
         if start is not None and end is not None and end < start:
             raise ValueError("end_seconds must be >= start_seconds.")
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise ValueError("limit must be an integer.")
         terms = {term.lower() for term in re.findall(r"[\wÀ-ÖØ-öø-ÿ]+", text_query) if len(term) > 1}
         matches = []
         for record in manifest["records"]:
@@ -386,7 +406,7 @@ class EvidenceStore:
             if terms and not terms.intersection(re.findall(r"[\wÀ-ÖØ-öø-ÿ]+", record.text.lower())):
                 continue
             matches.append(record)
-        return matches[:max(0, min(int(limit), 10_000))]
+        return matches[:max(0, min(limit, 10_000))]
 
     def delete(self, source_id: str) -> bool:
         path = self._path(source_id)
