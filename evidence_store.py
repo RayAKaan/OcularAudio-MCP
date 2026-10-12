@@ -132,12 +132,14 @@ def _make_record(
         return None
     start = float(start_seconds)
     end = float(end_seconds)
+    normalized_start = round(start, 3)
+    normalized_end = round(max(start, end), 3)
     record = EvidenceRecord(
-        evidence_id=_stable_id(source_id, modality, start, end, clean_text, locator),
+        evidence_id=_stable_id(source_id, modality, normalized_start, normalized_end, clean_text, locator),
         source_id=source_id,
         modality=modality,
-        start_seconds=round(start, 3),
-        end_seconds=round(max(start, end), 3),
+        start_seconds=normalized_start,
+        end_seconds=normalized_end,
         text=clean_text,
         content_hash=_text_hash(clean_text),
         provenance={**dict(provenance or {}), "locator": locator},
