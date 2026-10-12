@@ -32,6 +32,15 @@ class MCPV2SurfaceTests(unittest.TestCase):
         self.assertEqual("OcularAudio Server", self.server_module.mcp.name)
         self.assertEqual("1.3.0", self.server_module.mcp.version)
 
+    def test_modes_resource_exposes_enforceable_budgets(self):
+        payload = json.loads(asyncio.run(self.server_module.ocular_audio_modes_resource()))
+        self.assertEqual(["lite", "intelligence", "deep", "auto"], payload["available_modes"])
+        self.assertEqual(8, payload["policies"]["lite"]["max_evidence"])
+        self.assertEqual(24, payload["policies"]["intelligence"]["max_evidence"])
+        self.assertEqual(64, payload["policies"]["deep"]["max_evidence"])
+        self.assertEqual(32, payload["policies"]["deep"]["max_sources"])
+        self.assertIn("capability_gaps", payload["decision_contract"])
+
     def test_hybrid_search_reads_canonical_transcript_cache(self):
         module = self.server_module
         original_cache_dir = module.CACHE_DIR
