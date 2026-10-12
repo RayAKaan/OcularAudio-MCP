@@ -143,6 +143,21 @@ class CanonicalEvidenceTests(unittest.TestCase):
             (Path(directory) / "broken.json").write_text("{", encoding="utf-8")
             self.assertIsNone(store.read("broken"))
 
+    def test_query_rejects_non_finite_ranges_and_non_integer_limits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = EvidenceStore(directory)
+            store.save("source123", build_canonical_evidence("source123", "[00:01] evidence"))
+            with self.assertRaisesRegex(ValueError, "finite and non-negative"):
+                store.query("source123", start_seconds=float("nan"))
+            with self.assertRaisesRegex(ValueError, "integer"):
+                store.query("source123", limit=1.5)
+
+    def test_from_dict_rejects_invalid_provenance_shape(self):
+        payload = build_canonical_evidence("source123", "[00:01] evidence")[0].to_dict()
+        payload["provenance"] = ["unexpected"]
+        with self.assertRaisesRegex(ValueError, "provenance and metadata"):
+            EvidenceRecord.from_dict(payload)
+
     def test_replaces_stale_records_on_refresh(self):
         with tempfile.TemporaryDirectory() as directory:
             store = EvidenceStore(directory)
