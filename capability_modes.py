@@ -236,9 +236,16 @@ def build_mode_decision(
         features["visual"] = False
         features["multimodal"] = False
         gaps.append("FFmpeg is unavailable; media-frame processing may not run.")
-    if "tesseract" in capabilities and not bool(capabilities.get("tesseract")):
-        features["ocr"] = False
-        gaps.append("Tesseract is unavailable; OCR is disabled for this execution.")
+    if "tesseract" in capabilities:
+        tesseract_capability = capabilities.get("tesseract")
+        tesseract_available = (
+            bool(tesseract_capability.get("available"))
+            if isinstance(tesseract_capability, Mapping)
+            else bool(tesseract_capability)
+        )
+        if not tesseract_available:
+            features["ocr"] = False
+            gaps.append("Tesseract is unavailable; OCR is disabled for this execution.")
     if budget is not None and budget < policy.max_runtime_seconds:
         adjustments.append(f"Runtime ceiling reduced from {policy.max_runtime_seconds:g}s to the requested {budget:g}s budget.")
     for feature in sorted(set(str(item).strip().lower() for item in (requested_features or []))):
