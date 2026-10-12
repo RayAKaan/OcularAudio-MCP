@@ -67,6 +67,12 @@ class MCPV2SurfaceTests(unittest.TestCase):
                 self.assertNotIn("error", payload)
                 self.assertGreater(payload["result_count"], 0)
                 self.assertIn("pricing", payload["results"][0]["text"].lower())
+                manifest_path = Path(directory) / "evidence" / f"{cache_id}.json"
+                self.assertTrue(manifest_path.exists())
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                self.assertEqual(1, manifest["schema_version"])
+                self.assertTrue(all(item["evidence_id"].startswith("ev_") for item in manifest["records"]))
+                self.assertEqual("transcript", payload["results"][0]["source"])
         finally:
             module.CACHE_DIR = original_cache_dir
 
