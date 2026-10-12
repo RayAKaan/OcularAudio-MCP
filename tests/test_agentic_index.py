@@ -47,12 +47,17 @@ class AgenticIndexTests(unittest.TestCase):
         self.assertEqual(0, lite.policy.max_retries)
         self.assertEqual(2, deep.policy.max_retries)
 
-    def test_auto_mode_uses_source_count_and_budget(self):
+    def test_auto_mode_uses_source_count_budget_and_execution_requirement(self):
         plan = build_execution_plan("compare these", multi_video=True, source_count=12)
         self.assertEqual("deep", plan.mode_decision["resolved_mode"])
         self.assertEqual(32, plan.mode_decision["limits"]["max_sources"])
         budgeted = build_execution_plan("find pricing", budget_seconds=10)
         self.assertEqual(10, budgeted.policy.timeout_seconds)
+        executable = build_execution_plan("", mode="auto", execution=True)
+        self.assertEqual("intelligence", executable.mode_decision["resolved_mode"])
+        self.assertTrue(executable.mode_decision["features"]["agentic"])
+        lite_preview = build_execution_plan("", mode="lite")
+        self.assertFalse(lite_preview.mode_decision["features"]["agentic"])
 
     def test_policy_validation(self):
         self.assertEqual(2, ExecutionPolicy(max_retries=2).validate().max_retries)
