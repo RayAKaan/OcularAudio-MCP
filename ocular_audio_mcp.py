@@ -14,9 +14,9 @@ import threading
 from pathlib import Path
 from functools import lru_cache
 
-# Python version check (list[int] requires 3.9+)
-if sys.version_info < (3, 10):
-    sys.exit("Error: OcularAudio MCP requires Python 3.10 or higher. You are running Python {}.{}".format(*sys.version_info[:2]))
+# Python 3.11 is the minimum supported runtime (CI and Docker use 3.11).
+if sys.version_info < (3, 11):
+    sys.exit("Error: OcularAudio MCP requires Python 3.11 or higher. You are running Python {}.{}".format(*sys.version_info[:2]))
 
 from requests import Session
 from mcp.server import MCPServer
