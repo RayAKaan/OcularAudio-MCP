@@ -348,10 +348,33 @@ def _clear_cache(video_id: str = None) -> dict:
         if frame_dir.exists():
             shutil.rmtree(frame_dir, ignore_errors=True)
             cleared += 1
-        return {"cleared": cleared, "video_id": video_id, "message": "Source evidence artifacts cleared." if cleared else "Not found in cache"}
+        # Batch results are cache artifacts too. Invalidate any batch that
+        # contains this source so stale cross-video results cannot be reused.
+        for batch_file in BATCH_CACHE_DIR.glob("*.json"):
+            try:
+                batch_payload = json.loads(batch_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            sources = batch_payload.get("sources", [])
+            contains_source = any(
+                isinstance(item, dict)
+                and isinstance(item.get("source"), dict)
+                and (
+                    item["source"].get("source_id") == video_id
+                    or re.search(
+                        rf"(?<![A-Za-z0-9_-]){re.escape(str(video_id))}(?![A-Za-z0-9_-])",
+                        str(item["source"].get("url", "")),
+                    )
+                )
+                for item in sources
+            )
+            if contains_source:
+                batch_file.unlink(missing_ok=True)
+                cleared += 1
+        return {"cleared": cleared, "video_id": video_id, "message": "Source evidence and dependent batch artifacts cleared." if cleared else "Not found in cache"}
     count = 0
     cache_root = Path(CACHE_DIR)
-    for directory in (cache_root, cache_root / "evidence", cache_root / "visual"):
+    for directory in (cache_root, cache_root / "evidence", cache_root / "visual", BATCH_CACHE_DIR):
         if not directory.exists():
             continue
         for cache_file in directory.glob("*.json"):
@@ -363,7 +386,7 @@ def _clear_cache(video_id: str = None) -> dict:
             if frame_dir.is_dir():
                 shutil.rmtree(frame_dir, ignore_errors=True)
                 count += 1
-    return {"cleared": count, "message": f"Cleared {count} cached evidence artifacts"}
+    return {"cleared": count, "message": f"Cleared {count} cached evidence and batch artifacts"}
 
 def get_whisper_engine():
     global _whisper_engine
