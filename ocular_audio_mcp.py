@@ -381,7 +381,7 @@ def _clear_cache(video_id: str = None) -> dict:
     cache_root = Path(CACHE_DIR)
     # Root JSON files are transcript caches. Preserve config, credentials and
     # the operational audit log; only remove known generated cache artifacts.
-    for cache_file in cache_root.glob("*.json"):
+    for cache_file in cache_root.iterdir():
         if cache_file.name == "config.json" or cache_file.suffix not in {".json", ".tmp"} or not cache_file.is_file():
             continue
         cache_file.unlink(missing_ok=True)
