@@ -93,6 +93,7 @@ from agentic_index import (
     build_execution_plan,
     execute_with_policy,
     health_report,
+    is_writable_directory,
     read_audit_records,
 )
 
@@ -3005,8 +3006,8 @@ async def ocular_audio_readiness_resource() -> str:
     """Expose machine-readable readiness state for deployment probes."""
     caps = _check_system_capabilities()
     checks = [
-        ReadinessCheck("cache", CACHE_DIR.exists() and CACHE_DIR.is_dir(), str(CACHE_DIR)),
-        ReadinessCheck("batch_cache", BATCH_CACHE_DIR.exists() and BATCH_CACHE_DIR.is_dir(), str(BATCH_CACHE_DIR)),
+        ReadinessCheck("cache", is_writable_directory(CACHE_DIR), str(CACHE_DIR)),
+        ReadinessCheck("batch_cache", is_writable_directory(BATCH_CACHE_DIR), str(BATCH_CACHE_DIR)),
         ReadinessCheck("opencv", bool(caps.get("opencv")), "OpenCV import"),
         ReadinessCheck("ffmpeg", bool(caps.get("ffmpeg")), "FFmpeg executable"),
     ]
