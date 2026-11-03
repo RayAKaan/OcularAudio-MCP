@@ -12,7 +12,10 @@ from dataclasses import asdict, dataclass
 import asyncio
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
+import tempfile
 import re
 from typing import Any, Awaitable, Callable, Iterable
 
@@ -237,18 +240,37 @@ def summarize_batch(batch_items: Iterable[BatchItem]) -> dict[str, Any]:
     }
 
 
+def _batch_cache_path(directory: Path, batch_id: str) -> Path:
+    if not isinstance(batch_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", batch_id):
+        raise ValueError("batch_id must be a safe cache identifier.")
+    return directory / f"{batch_id}.json"
+
+
 def write_batch_result(directory: Path, batch_id: str, payload: dict[str, Any]) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
-    target = directory / f"{batch_id}.json"
-    temporary = target.with_suffix(".tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(target)
+    target = _batch_cache_path(directory, batch_id)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{batch_id}.", suffix=".tmp", dir=directory
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, target)
+    except Exception:
+        try:
+            os.unlink(temporary_name)
+        except OSError:
+            pass
+        raise
     return target
 
 
 def read_batch_result(directory: Path, batch_id: str) -> dict[str, Any] | None:
-    target = directory / f"{batch_id}.json"
+    target = _batch_cache_path(directory, batch_id)
     try:
-        return json.loads(target.read_text(encoding="utf-8"))
+        payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    return payload if isinstance(payload, dict) else None
