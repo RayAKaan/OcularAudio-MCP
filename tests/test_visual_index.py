@@ -27,6 +27,12 @@ class VisualIndexTests(unittest.TestCase):
             [0, 2500, 5000, 7500, 10000],
         )
 
+    def test_sampling_large_durations_does_not_exceed_frame_cap(self):
+        samples = sample_timestamps(1_000_000_000, interval_seconds=1, max_frames=5)
+        self.assertEqual(5, len(samples))
+        self.assertEqual(0, samples[0])
+        self.assertEqual(1_000_000_000, samples[-1])
+
     def test_sampling_rejects_non_finite_or_invalid_inputs(self):
         with self.assertRaises(ValueError):
             sample_timestamps(float("inf"))
