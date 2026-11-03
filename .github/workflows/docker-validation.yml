@@ -1,0 +1,54 @@
+name: OcularAudio Docker Validation
+
+on:
+  push:
+    branches: ["main", "fix/**", "feat/**"]
+    paths:
+      - "docker/**"
+      - "scripts/docker_http_smoke.py"
+      - ".github/workflows/docker-validation.yml"
+      - "requirements.txt"
+      - "ocular_audio_mcp.py"
+      - "deployment_security.py"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "docker/**"
+      - "scripts/docker_http_smoke.py"
+      - ".github/workflows/docker-validation.yml"
+      - "requirements.txt"
+      - "ocular_audio_mcp.py"
+      - "deployment_security.py"
+
+jobs:
+  container-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production image
+        run: docker build --pull -f docker/Dockerfile -t ocular-audio-mcp:ci .
+      - name: Start hardened authenticated container
+        run: |
+          docker volume create ocular-audio-ci-cache
+          docker run --detach --name ocular-audio-ci \
+            --publish 127.0.0.1:8000:8000 \
+            --env OCULAR_AUDIO_MCP_REQUIRE_AUTH=true \
+            --env OCULAR_AUDIO_MCP_AUTH_TOKEN=ci-smoke-token-not-for-production \
+            --env OCULAR_AUDIO_MCP_ISSUER_URL=https://issuer.example.com \
+            --env OCULAR_AUDIO_MCP_RESOURCE_URL=http://127.0.0.1:8000/mcp \
+            --env OCULAR_AUDIO_MCP_ALLOWED_HOSTS=127.0.0.1:8000 \
+            --volume ocular-audio-ci-cache:/home/ocular/.cache/ocular_audio_mcp \
+            --read-only --tmpfs /tmp:size=512m,mode=1777 \
+            --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 --init \
+            ocular-audio-mcp:ci
+      - name: Verify authenticated MCP initialization
+        run: python scripts/docker_http_smoke.py --token ci-smoke-token-not-for-production
+      - name: Print container logs on failure
+        if: failure()
+        run: docker logs ocular-audio-ci
+      - name: Remove container and volume
+        if: always()
+        run: |
+          docker rm --force ocular-audio-ci || true
+          docker volume rm ocular-audio-ci-cache || true
