@@ -374,15 +374,30 @@ def _clear_cache(video_id: str = None) -> dict:
         return {"cleared": cleared, "video_id": video_id, "message": "Source evidence and dependent batch artifacts cleared." if cleared else "Not found in cache"}
     count = 0
     cache_root = Path(CACHE_DIR)
-    for directory in (cache_root, cache_root / "evidence", cache_root / "visual", BATCH_CACHE_DIR):
-        if not directory.exists():
+    # Root JSON files are transcript caches. Preserve config, credentials and
+    # the operational audit log; only remove known generated cache artifacts.
+    for cache_file in cache_root.glob("*.json"):
+        if cache_file.name == "config.json" or not cache_file.is_file():
             continue
-        for cache_file in directory.glob("*.json"):
-            cache_file.unlink(missing_ok=True)
-            count += 1
+        cache_file.unlink(missing_ok=True)
+        count += 1
+
+    def remove_cached_files(directory: Path) -> int:
+        removed = 0
+        if not directory.exists():
+            return removed
+        for path in directory.rglob("*"):
+            if path.is_file() or path.is_symlink():
+                path.unlink(missing_ok=True)
+                removed += 1
+        return removed
+
+    for directory in (cache_root / "evidence", cache_root / "visual", BATCH_CACHE_DIR):
+        count += remove_cached_files(directory)
+
     frame_root = cache_root / "visual" / "frames"
     if frame_root.exists():
-        for frame_dir in frame_root.iterdir():
+        for frame_dir in list(frame_root.iterdir()):
             if frame_dir.is_dir():
                 shutil.rmtree(frame_dir, ignore_errors=True)
                 count += 1
