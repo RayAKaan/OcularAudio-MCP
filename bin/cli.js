@@ -91,7 +91,7 @@ function clearAllCache() {
   // transcript JSON plus all evidence, visual/frame and batch cache artifacts.
   let removed = removeFilesRecursively(CACHE_DIR, (name, entryPath) => {
     const relative = path.relative(CACHE_DIR, entryPath).split(path.sep);
-    if (relative.length === 1) return name.endsWith('.json') && name !== 'config.json';
+    if (relative.length === 1) return (name.endsWith('.json') || name.endsWith('.tmp')) && name !== 'config.json';
     return ['evidence', 'visual', 'batches'].includes(relative[0]);
   });
   return removed;
