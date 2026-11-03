@@ -39,7 +39,7 @@ function ensureCacheDir() {
 
 function listCachedFiles() {
   ensureCacheDir();
-  return fs.readdirSync(CACHE_DIR).filter(f => f.endsWith('.json'));
+  return fs.readdirSync(CACHE_DIR).filter(f => f.endsWith('.json') && f !== 'config.json' && fs.statSync(path.join(CACHE_DIR, f)).isFile());
 }
 
 function getCacheStats() {
@@ -173,7 +173,7 @@ OPTIONS
   --force                 Bypass cache and re-process the video
   --list-cached           List all cached videos with titles
   --cache-info            Show cache statistics (count, size, oldest/newest)
-  --clear-cache           Delete all cached transcripts and screenshots
+  --clear-cache           Delete transcript, evidence, visual/frame, and batch cache artifacts
 
   Verbosity:
   --verbose               Show detailed progress information
@@ -458,7 +458,7 @@ if (cacheInfo) {
 
 if (clearCache) {
   const count = clearAllCache();
-  console.log(chalk.green(`[SUCCESS] Cleared ${count} cached video(s) from ${CACHE_DIR}`));
+  console.log(chalk.green(`[SUCCESS] Cleared ${count} cache artifact(s) from ${CACHE_DIR}`));
   process.exit(0);
 }
 
