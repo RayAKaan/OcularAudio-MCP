@@ -253,7 +253,7 @@ async def execute_with_policy(
     )
 
 
-def _is_writable_directory(directory: Path) -> bool:
+def is_writable_directory(directory: Path) -> bool:
     if not directory.exists() or not directory.is_dir():
         return False
     try:
@@ -278,8 +278,8 @@ def health_report(
     checks = {
         "ffmpeg": bool(capabilities.get("ffmpeg")),
         "opencv": bool(capabilities.get("opencv")),
-        "cache_writable": _is_writable_directory(cache_dir),
-        "batch_cache_writable": _is_writable_directory(batch_cache_dir),
+        "cache_writable": is_writable_directory(cache_dir),
+        "batch_cache_writable": is_writable_directory(batch_cache_dir),
     }
     warnings: list[str] = []
     if not checks["ffmpeg"]:
