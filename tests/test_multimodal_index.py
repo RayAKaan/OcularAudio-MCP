@@ -45,6 +45,12 @@ class MultimodalIndexTests(unittest.TestCase):
         self.assertEqual(len(moments), 1)
         self.assertEqual(moments[0].modalities, ["transcript"])
 
+    def test_rejects_negative_or_non_finite_alignment_windows(self):
+        with self.assertRaises(ValueError):
+            build_multimodal_moments([self.segment], [self.frame1], window_seconds=-1)
+        with self.assertRaises(ValueError):
+            build_multimodal_moments([self.segment], [self.frame1], window_seconds=float("inf"))
+
     def test_description_marks_change(self):
         moments = build_multimodal_moments([], [self.frame1, self.frame2])
         description = describe_moment(moments[1])

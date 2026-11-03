@@ -7,6 +7,7 @@ workflow remains unchanged. Secrets are never stored in source control.
 from __future__ import annotations
 
 import os
+import secrets
 import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -108,7 +109,9 @@ class StaticBearerTokenVerifier(TokenVerifier):
         self._ttl_seconds = ttl_seconds
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        if token != self._token:
+        supplied = str(token).encode("utf-8")
+        expected = self._token.encode("utf-8")
+        if not secrets.compare_digest(supplied, expected):
             return None
         return AccessToken(
             token=token,

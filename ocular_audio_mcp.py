@@ -14,9 +14,9 @@ import threading
 from pathlib import Path
 from functools import lru_cache
 
-# Python version check (list[int] requires 3.9+)
-if sys.version_info < (3, 10):
-    sys.exit("Error: OcularAudio MCP requires Python 3.10 or higher. You are running Python {}.{}".format(*sys.version_info[:2]))
+# Python 3.11 is the minimum supported runtime (CI and Docker use 3.11).
+if sys.version_info < (3, 11):
+    sys.exit("Error: OcularAudio MCP requires Python 3.11 or higher. You are running Python {}.{}".format(*sys.version_info[:2]))
 
 from requests import Session
 from mcp.server import MCPServer
@@ -93,6 +93,7 @@ from agentic_index import (
     build_execution_plan,
     execute_with_policy,
     health_report,
+    is_writable_directory,
     read_audit_records,
 )
 
@@ -348,22 +349,64 @@ def _clear_cache(video_id: str = None) -> dict:
         if frame_dir.exists():
             shutil.rmtree(frame_dir, ignore_errors=True)
             cleared += 1
-        return {"cleared": cleared, "video_id": video_id, "message": "Source evidence artifacts cleared." if cleared else "Not found in cache"}
+        # Batch results are cache artifacts too. Invalidate any batch that
+        # contains this source so stale cross-video results cannot be reused.
+        for batch_file in BATCH_CACHE_DIR.glob("*.json"):
+            try:
+                batch_payload = json.loads(batch_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(batch_payload, dict):
+                continue
+            sources = batch_payload.get("sources", [])
+            if not isinstance(sources, list):
+                continue
+            contains_source = any(
+                isinstance(item, dict)
+                and isinstance(item.get("source"), dict)
+                and (
+                    item["source"].get("source_id") == video_id
+                    or re.search(
+                        rf"(?<![A-Za-z0-9_-]){re.escape(str(video_id))}(?![A-Za-z0-9_-])",
+                        str(item["source"].get("url", "")),
+                    )
+                )
+                for item in sources
+            )
+            if contains_source:
+                batch_file.unlink(missing_ok=True)
+                cleared += 1
+        return {"cleared": cleared, "video_id": video_id, "message": "Source evidence and dependent batch artifacts cleared." if cleared else "Not found in cache"}
     count = 0
     cache_root = Path(CACHE_DIR)
-    for directory in (cache_root, cache_root / "evidence", cache_root / "visual"):
-        if not directory.exists():
+    # Root JSON files are transcript caches. Preserve config, credentials and
+    # the operational audit log; only remove known generated cache artifacts.
+    for cache_file in cache_root.iterdir():
+        if cache_file.name == "config.json" or cache_file.suffix not in {".json", ".tmp"} or not cache_file.is_file():
             continue
-        for cache_file in directory.glob("*.json"):
-            cache_file.unlink(missing_ok=True)
-            count += 1
+        cache_file.unlink(missing_ok=True)
+        count += 1
+
+    def remove_cached_files(directory: Path) -> int:
+        removed = 0
+        if not directory.exists():
+            return removed
+        for path in directory.rglob("*"):
+            if path.is_file() or path.is_symlink():
+                path.unlink(missing_ok=True)
+                removed += 1
+        return removed
+
+    for directory in (cache_root / "evidence", cache_root / "visual", BATCH_CACHE_DIR):
+        count += remove_cached_files(directory)
+
     frame_root = cache_root / "visual" / "frames"
     if frame_root.exists():
-        for frame_dir in frame_root.iterdir():
+        for frame_dir in list(frame_root.iterdir()):
             if frame_dir.is_dir():
                 shutil.rmtree(frame_dir, ignore_errors=True)
                 count += 1
-    return {"cleared": count, "message": f"Cleared {count} cached evidence artifacts"}
+    return {"cleared": count, "message": f"Cleared {count} cached evidence and batch artifacts"}
 
 def get_whisper_engine():
     global _whisper_engine
@@ -1772,50 +1815,70 @@ async def run_ocular_audio_analysis(
         top_k = int(plan.mode_decision["limits"]["max_evidence"])
         resolved_mode = plan.mode_decision["resolved_mode"]
         outputs = []
+        deadline = time.monotonic() + effective_policy.timeout_seconds
+        timed_out = False
         for step in plan.steps:
+            remaining = deadline - time.monotonic()
+            if remaining < 0.001:
+                timed_out = True
+                break
+            step_policy = ExecutionPolicy(
+                timeout_seconds=remaining,
+                max_retries=effective_policy.max_retries,
+                backoff_seconds=effective_policy.backoff_seconds,
+                max_steps=effective_policy.max_steps,
+            ).validate()
             if step.operation == "inspect_source":
                 worker = lambda: inspect_ocular_audio_source(url)
             elif step.operation == "search_hybrid":
                 worker = lambda: search_ocular_audio_hybrid(
                     url=url, query=query, top_k=top_k, mode=resolved_mode,
-                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                    budget_seconds=min(remaining, plan.mode_decision["limits"]["max_runtime_seconds"]),
                 )
             elif step.operation == "inspect_moment":
-                evidence = await search_ocular_audio_hybrid(
-                    url=url, query=query, top_k=1, mode=resolved_mode,
-                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
-                )
-                payload = json.loads(evidence)
-                timestamp = float((payload.get("results") or [{}])[0].get("start_seconds", 0))
-                worker = lambda: inspect_ocular_audio_moment(url=url, timestamp_seconds=timestamp)
+                async def inspect_moment_worker():
+                    evidence = await search_ocular_audio_hybrid(
+                        url=url, query=query, top_k=1, mode=resolved_mode,
+                        budget_seconds=min(remaining, plan.mode_decision["limits"]["max_runtime_seconds"]),
+                    )
+                    payload = json.loads(evidence)
+                    timestamp = float((payload.get("results") or [{}])[0].get("start_seconds", 0))
+                    return await inspect_ocular_audio_moment(url=url, timestamp_seconds=timestamp)
+                worker = inspect_moment_worker
             elif step.operation == "search_visual":
                 worker = lambda: search_ocular_audio_visuals(
                     url=url, query=query, top_k=top_k, mode=resolved_mode,
-                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                    budget_seconds=min(remaining, plan.mode_decision["limits"]["max_runtime_seconds"]),
                 )
             elif step.operation == "timeline":
                 worker = lambda: get_ocular_audio_video_timeline(url=url)
             elif step.operation == "search_batch":
                 worker = lambda: search_ocular_audio_videos(
                     sources_json=url, query=query, top_k=top_k, mode=resolved_mode,
-                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                    budget_seconds=min(remaining, plan.mode_decision["limits"]["max_runtime_seconds"]),
                 )
             elif step.operation == "compare_batch":
                 worker = lambda: compare_ocular_audio_videos(
                     sources_json=url, query=query, mode=resolved_mode,
-                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                    budget_seconds=min(remaining, plan.mode_decision["limits"]["max_runtime_seconds"]),
                 )
             else:
                 raise ValueError(f"Unsupported plan operation: {step.operation}")
-            result, audit = await execute_with_policy(step.operation, worker, effective_policy)
+            result, audit = await execute_with_policy(step.operation, worker, step_policy)
             append_audit_record(AUDIT_LOG_PATH, audit)
             outputs.append({"step": step.to_dict(), "audit": audit.to_dict(), "result": result})
             if audit.status != "success" and step.required:
+                timed_out = time.monotonic() >= deadline
                 break
-        return json.dumps({
+        timed_out = timed_out or time.monotonic() >= deadline
+        response = {
             "plan": plan.to_dict(), "mode_decision": plan.mode_decision,
             "completed_steps": len(outputs), "results": outputs,
-        }, ensure_ascii=False, indent=2, default=str)
+        }
+        if timed_out:
+            response["timed_out"] = True
+            response["error"] = "Agentic analysis exceeded its total execution budget; partial results are included."
+        return json.dumps(response, ensure_ascii=False, indent=2, default=str)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
@@ -2943,8 +3006,8 @@ async def ocular_audio_readiness_resource() -> str:
     """Expose machine-readable readiness state for deployment probes."""
     caps = _check_system_capabilities()
     checks = [
-        ReadinessCheck("cache", CACHE_DIR.exists() and CACHE_DIR.is_dir(), str(CACHE_DIR)),
-        ReadinessCheck("batch_cache", BATCH_CACHE_DIR.exists() and BATCH_CACHE_DIR.is_dir(), str(BATCH_CACHE_DIR)),
+        ReadinessCheck("cache", is_writable_directory(CACHE_DIR), str(CACHE_DIR)),
+        ReadinessCheck("batch_cache", is_writable_directory(BATCH_CACHE_DIR), str(BATCH_CACHE_DIR)),
         ReadinessCheck("opencv", bool(caps.get("opencv")), "OpenCV import"),
         ReadinessCheck("ffmpeg", bool(caps.get("ffmpeg")), "FFmpeg executable"),
     ]

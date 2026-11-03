@@ -184,7 +184,7 @@ The supplied deployment uses Python 3.11, FFmpeg, a persistent cache volume, a r
 For internet-facing deployments, use TLS and an organization identity provider. The built-in static bearer verifier is intended for controlled deployments and can be replaced by JWT validation or RFC 7662 introspection.
 
 ## Runtime requirements
-- Python 3.11+ recommended for the release environment.
+- Python 3.11+ (minimum supported and tested release runtime).
 - Node.js 18+ for the NPM CLI.
 - FFmpeg for media processing.
 - OpenCV for visual processing.

@@ -8,6 +8,7 @@ deterministic and inspectable, making the layer reliable and replaceable.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
 import re
 from typing import Any, Iterable
 
@@ -72,6 +73,9 @@ def build_multimodal_moments(
     visual_frames: Iterable[VisualFrame],
     window_seconds: float = 5,
 ) -> list[MultimodalMoment]:
+    window = float(window_seconds)
+    if not math.isfinite(window) or window < 0:
+        raise ValueError("window_seconds must be finite and non-negative.")
     segments = sorted(list(transcript_segments), key=lambda item: item.start_seconds)
     frames = sorted(list(visual_frames), key=lambda item: item.timestamp_seconds)
     if not frames and not segments:
@@ -83,8 +87,8 @@ def build_multimodal_moments(
         timestamp = frame.timestamp_seconds
         nearby = timeline_window(
             segments,
-            max(0.0, timestamp - max(0.0, window_seconds)),
-            timestamp + max(0.0, window_seconds),
+            max(0.0, timestamp - window),
+            timestamp + window,
         )
         nearest = nearest_evidence(segments, timestamp)
         if nearest and nearest not in nearby:
@@ -103,8 +107,8 @@ def build_multimodal_moments(
             MultimodalMoment(
                 moment_id=f"m{index:05d}",
                 timestamp_seconds=timestamp,
-                start_seconds=max(0.0, timestamp - window_seconds),
-                end_seconds=timestamp + window_seconds,
+                start_seconds=max(0.0, timestamp - window),
+                end_seconds=timestamp + window,
                 transcript=[_evidence_payload(item) for item in nearby],
                 visual_frames=[_frame_payload(frame)],
                 ocr_text=ocr,

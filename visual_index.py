@@ -64,15 +64,33 @@ def sample_timestamps(
     interval_seconds: float = 10,
     max_frames: int = 240,
 ) -> list[int]:
-    duration = max(0.0, float(duration_seconds))
-    interval = max(1.0, float(interval_seconds))
+    duration = float(duration_seconds)
+    requested_interval = float(interval_seconds)
+    if not math.isfinite(duration) or duration < 0:
+        raise ValueError("duration_seconds must be finite and non-negative.")
+    if not math.isfinite(requested_interval) or requested_interval <= 0:
+        raise ValueError("interval_seconds must be finite and greater than zero.")
+    interval = max(1.0, requested_interval)
     limit = max(1, min(int(max_frames), 1000))
     if duration == 0:
         return [0]
-    values = list(range(0, max(1, int(math.floor(duration))) + 1, int(interval)))
-    if int(duration) not in values:
-        values.append(int(duration))
-    return sorted(set(values))[:limit]
+    endpoint = int(duration)
+    regular_count = int(math.floor(duration / interval)) + 1
+    regular_endpoint = int(round((regular_count - 1) * interval))
+    total_count = regular_count + int(regular_endpoint != endpoint)
+    if total_count <= limit:
+        values = [int(round(index * interval)) for index in range(regular_count)]
+        if endpoint not in values:
+            values.append(endpoint)
+        return sorted(set(values))
+    if limit == 1:
+        return [0]
+    # For capped recordings, sample directly across the complete duration.
+    # Avoid constructing a potentially enormous per-interval list first.
+    return sorted({
+        int(round(index * duration / (limit - 1)))
+        for index in range(limit)
+    })
 
 
 def normalize_crop_box(
