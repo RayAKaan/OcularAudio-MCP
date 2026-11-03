@@ -219,26 +219,36 @@ async def execute_with_policy(
     metrics = GLOBAL_METRICS
     timer = OperationTimer(metrics, operation)
     last_error: Exception | None = None
+    attempts = 0
+    deadline = started + policy.timeout_seconds
     for attempt in range(policy.max_retries + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            last_error = last_error or TimeoutError("Execution deadline exhausted before the next attempt.")
+            break
+        attempts += 1
         try:
-            result = await asyncio.wait_for(worker(), timeout=policy.timeout_seconds)
+            # The timeout is an operation-wide deadline, not a fresh allowance
+            # for every retry. Retries and backoff consume the same budget.
+            result = await asyncio.wait_for(worker(), timeout=remaining)
             timer.finish("success")
             return result, AuditRecord(
                 time.time(), operation, "success",
                 round((time.monotonic() - started) * 1000, 3),
-                {"attempt": attempt + 1, "metrics": metrics.snapshot()},
+                {"attempt": attempts, "metrics": metrics.snapshot()},
             )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             last_error = exc
-            if attempt < policy.max_retries:
-                await asyncio.sleep(policy.backoff_seconds * (2 ** attempt))
+            remaining = deadline - time.monotonic()
+            if attempt < policy.max_retries and remaining > 0:
+                await asyncio.sleep(min(policy.backoff_seconds * (2 ** attempt), remaining))
     timer.finish("error")
     return None, AuditRecord(
         time.time(), operation, "error",
         round((time.monotonic() - started) * 1000, 3),
-        {"attempt": policy.max_retries + 1, "error": str(last_error), "metrics": metrics.snapshot()},
+        {"attempt": attempts, "error": str(last_error or "Execution deadline exhausted."), "metrics": metrics.snapshot()},
     )
 
 
