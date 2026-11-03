@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
+import tempfile
 import time
 from typing import Any, Awaitable, Callable
 
@@ -252,6 +253,22 @@ async def execute_with_policy(
     )
 
 
+def _is_writable_directory(directory: Path) -> bool:
+    if not directory.exists() or not directory.is_dir():
+        return False
+    try:
+        # A real create/write/delete probe catches read-only mounts and ACL
+        # failures that an existence-only check would incorrectly report ready.
+        with tempfile.NamedTemporaryFile(
+            prefix=".ocular-audio-health-", dir=directory, delete=True
+        ) as probe:
+            probe.write(b"ok")
+            probe.flush()
+        return True
+    except OSError:
+        return False
+
+
 def health_report(
     capabilities: dict[str, Any],
     *,
@@ -261,8 +278,8 @@ def health_report(
     checks = {
         "ffmpeg": bool(capabilities.get("ffmpeg")),
         "opencv": bool(capabilities.get("opencv")),
-        "cache_writable": cache_dir.exists() and cache_dir.is_dir(),
-        "batch_cache_writable": batch_cache_dir.exists() and batch_cache_dir.is_dir(),
+        "cache_writable": _is_writable_directory(cache_dir),
+        "batch_cache_writable": _is_writable_directory(batch_cache_dir),
     }
     warnings: list[str] = []
     if not checks["ffmpeg"]:
