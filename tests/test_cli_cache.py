@@ -20,6 +20,7 @@ class CLICacheTests(unittest.TestCase):
                 cache / "visual" / "video123.json",
                 cache / "visual" / "frames" / "video123" / "frame.jpg",
                 cache / "batches" / "batch123.json",
+                cache / "orphan.tmp",
                 cache / "config.json",
                 cache / "audit.jsonl",
                 cache / "cookies.txt",
@@ -38,9 +39,9 @@ class CLICacheTests(unittest.TestCase):
                 timeout=20,
             )
             self.assertEqual(0, completed.returncode, msg=completed.stderr)
-            for fixture in fixtures[:5]:
+            for fixture in fixtures[:6]:
                 self.assertFalse(fixture.exists(), msg=f"Cache artifact remains: {fixture}")
-            for fixture in fixtures[5:]:
+            for fixture in fixtures[6:]:
                 self.assertTrue(fixture.exists(), msg=f"Non-cache data was deleted: {fixture}")
 
 
