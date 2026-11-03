@@ -63,7 +63,7 @@ class CLIMCPStdioTests(unittest.TestCase):
         ]
         completed = subprocess.run(
             ["node", str(CLI)],
-            input="".join(json.dumps(message) + "\\n" for message in messages),
+            input="".join(json.dumps(message) + "\n" for message in messages),
             capture_output=True,
             text=True,
             cwd=ROOT,
