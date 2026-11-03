@@ -17,13 +17,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from universal_sources import (
-    is_media_url_scheme,
-    platform_from_extractor,
-    platform_from_host,
-    source_family,
-)
-
-from universal_sources import (
     DIRECT_MEDIA_EXTENSIONS,
     is_media_url_scheme,
     platform_from_extractor,
@@ -41,8 +34,8 @@ ANALYSIS_LEVEL_ALIASES = {
     "extreme": "omniscient",
 }
 
-VIDEO_EXTENSIONS = set(DIRECT_MEDIA_EXTENSIONS) - AUDIO_EXTENSIONS if "AUDIO_EXTENSIONS" in globals() else {".3gp", ".avi", ".flv", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".ts", ".webm", ".wmv", ".m3u8", ".mpd"}
 AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".weba"}
+VIDEO_EXTENSIONS = set(DIRECT_MEDIA_EXTENSIONS) - AUDIO_EXTENSIONS
 
 PLATFORM_HOSTS = {
     "youtube": ("youtube.com", "youtu.be", "youtube-nocookie.com"),
@@ -218,7 +211,6 @@ def classify_source(source: str) -> Dict[str, Any]:
         "source_kind": "url",
         "platform": detect_platform(value),
         "source_family": source_family(detect_platform(value)),
-        "source_family": source_family(detect_platform(value)),
         "media_type": media_type,
         "is_live": scheme.startswith("rtmp"),
         "extension": suffix,
@@ -316,9 +308,7 @@ def resolve_media_source(source: str, cookies_path: str = "") -> Dict[str, Any]:
         canonical.update({
             "platform": detect_platform(source, extractor),
             "source_family": source_family(platform_from_extractor(extractor) if extractor else detect_platform(source)),
-            "source_family": source_family(platform_from_extractor(extractor) if extractor else detect_platform(source)),
             "extractor": extractor or None,
-            "extractor_platform": platform_from_extractor(extractor),
             "extractor_platform": platform_from_extractor(extractor),
             "title": info.get("title") or canonical["title"],
             "uploader": info.get("uploader") or info.get("channel") or "",
