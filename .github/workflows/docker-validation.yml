@@ -2,7 +2,7 @@ name: OcularAudio Docker Validation
 
 on:
   push:
-    branches: ["main", "fix/**", "feat/**"]
+    branches: ["main"]
     paths:
       - "docker/**"
       - "scripts/docker_http_smoke.py"
@@ -28,27 +28,43 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build production image
         run: docker build --pull -f docker/Dockerfile -t ocular-audio-mcp:ci .
-      - name: Start hardened authenticated container
+      - name: Configure isolated authenticated deployment
         run: |
-          docker volume create ocular-audio-ci-cache
-          docker run --detach --name ocular-audio-ci \
-            --publish 127.0.0.1:8000:8000 \
-            --env OCULAR_AUDIO_MCP_REQUIRE_AUTH=true \
-            --env OCULAR_AUDIO_MCP_AUTH_TOKEN=ci-smoke-token-not-for-production \
-            --env OCULAR_AUDIO_MCP_ISSUER_URL=https://issuer.example.com \
-            --env OCULAR_AUDIO_MCP_RESOURCE_URL=http://127.0.0.1:8000/mcp \
-            --env OCULAR_AUDIO_MCP_ALLOWED_HOSTS=127.0.0.1:8000 \
-            --volume ocular-audio-ci-cache:/home/ocular/.cache/ocular_audio_mcp \
-            --read-only --tmpfs /tmp:size=512m,mode=1777 \
-            --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 --init \
-            ocular-audio-mcp:ci
-      - name: Verify authenticated MCP initialization
-        run: python scripts/docker_http_smoke.py --token ci-smoke-token-not-for-production
-      - name: Print container logs on failure
+          cat > .env <<'EOF'
+          OCULAR_AUDIO_MCP_REQUIRE_AUTH=true
+          OCULAR_AUDIO_MCP_AUTH_TOKEN=ci-smoke-token-not-for-production
+          OCULAR_AUDIO_MCP_ISSUER_URL=https://issuer.example.com
+          OCULAR_AUDIO_MCP_RESOURCE_URL=http://127.0.0.1:8000/mcp
+          OCULAR_AUDIO_MCP_ALLOWED_HOSTS=127.0.0.1:8000
+          EOF
+      - name: Validate Compose configuration
+        run: docker compose -f docker/docker-compose.yml config --quiet
+      - name: Start production Compose deployment
+        run: docker compose -f docker/docker-compose.yml up --build -d
+      - name: Wait for authenticated MCP healthcheck
+        run: |
+          container_id="$(docker compose -f docker/docker-compose.yml ps -q ocular-audio)"
+          test -n "$container_id"
+          for attempt in $(seq 1 90); do
+            health="$(docker inspect --format '{{.State.Health.Status}}' "$container_id")"
+            if [ "$health" = "healthy" ]; then
+              echo "Compose MCP healthcheck is healthy."
+              exit 0
+            fi
+            if [ "$health" = "unhealthy" ]; then
+              docker compose -f docker/docker-compose.yml logs
+              exit 1
+            fi
+            sleep 2
+          done
+          docker compose -f docker/docker-compose.yml logs
+          echo "Compose service did not become healthy."
+          exit 1
+      - name: Print Compose logs on failure
         if: failure()
-        run: docker logs ocular-audio-ci
-      - name: Remove container and volume
+        run: docker compose -f docker/docker-compose.yml logs || true
+      - name: Remove deployment and temporary environment
         if: always()
         run: |
-          docker rm --force ocular-audio-ci || true
-          docker volume rm ocular-audio-ci-cache || true
+          docker compose -f docker/docker-compose.yml down --volumes --remove-orphans || true
+          rm -f .env
