@@ -7,6 +7,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const root = path.resolve(__dirname, '..');
+const expectedVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ocular-audio-pack-'));
 
 function run(command, args, options = {}) {
@@ -42,8 +43,8 @@ try {
   run('tar', ['-xzf', archive, '-C', path.join(temporaryRoot, 'unpacked')]);
   const unpackedRoot = path.join(temporaryRoot, 'unpacked', 'package');
   const metadata = JSON.parse(fs.readFileSync(path.join(unpackedRoot, 'package.json'), 'utf8'));
-  if (metadata.name !== 'ocular-audio-mcp' || metadata.version !== '1.3.0') {
-    throw new Error('Packed package metadata does not match ocular-audio-mcp@1.3.0');
+  if (metadata.name !== 'ocular-audio-mcp' || metadata.version !== expectedVersion) {
+    throw new Error('Packed package metadata does not match ocular-audio-mcp@' + expectedVersion);
   }
   if (metadata.bin?.['ocular-audio'] !== './bin/cli.js') {
     throw new Error('Packed CLI executable mapping is invalid');

@@ -1,11 +1,13 @@
 #!/usr/bin/env node
+'use strict';
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const root = path.resolve(__dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
 const server = JSON.parse(fs.readFileSync(path.join(root, 'server.json'), 'utf8'));
-const expectedSourceVersion = '1.3.0';
+const expectedSourceVersion = '1.3.1';
 const registryVersion = server.packages?.[0]?.version;
 const validVersion = (value) => /^\d+\.\d+\.\d+$/.test(value || '');
 const versionParts = (value) => value.split('.').map(Number);
@@ -17,8 +19,9 @@ const isNewer = (candidate, reference) => {
   }
   return false;
 };
-if (pkg.version !== expectedSourceVersion || server.version !== expectedSourceVersion) {
-  throw new Error('Local source/package version must remain 1.3.0');
+if (pkg.version !== expectedSourceVersion || lock.version !== expectedSourceVersion ||
+    lock.packages?.['']?.version !== expectedSourceVersion || server.version !== expectedSourceVersion) {
+  throw new Error('Package, lockfile, and MCP server source versions must all be 1.3.1');
 }
 if (!validVersion(registryVersion)) {
   throw new Error('MCP registry package version must be an explicit semantic version');
@@ -31,4 +34,4 @@ if (!pkg.files.includes('ocular_audio_mcp.py')) throw new Error('Python server m
 if (!pkg.files.includes('evidence_store.py') || !fs.existsSync(path.join(root, 'evidence_store.py'))) throw new Error('Canonical evidence store missing from package allowlist');
 for (const required of ['README.md','LICENSE','requirements.txt']) if (!fs.existsSync(path.join(root, required))) throw new Error(required+' missing');
 execFileSync(process.execPath, ['--check', path.join(root, 'bin', 'cli.js')], {stdio:'ignore'});
-console.log('OcularAudio source v' + pkg.version + ': metadata OK; MCP registry manifest targets v' + registryVersion + '.');
+console.log('OcularAudio source v' + pkg.version + ': package, lockfile and server metadata OK; MCP registry manifest targets published v' + registryVersion + '.');

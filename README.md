@@ -4,7 +4,7 @@
 
 OcularAudio lets MCP-compatible AI systems watch, listen to, search, inspect, compare, and reason over media. It turns URLs, streams, and local media into reusable timestamped evidence: metadata, transcripts, frames, OCR, retrieval results, multimodal moments, and cross-video intelligence.
 
-**v1.3.0 · MIT**
+**v1.3.1 · MIT**
 
 ## Product
 
@@ -68,7 +68,7 @@ The CLI's existing --mode flag now reaches the Python runtime. Use --budget-seco
 
 ### NPM / MCP
 
-**Release status:** this repository contains source version **1.3.0**, but that version is not yet published to npm. The latest published package is **1.2.1**, so the `npx` examples below install 1.2.1 until a separate 1.3.0 release is authorized and published. To test the current checkout, clone the repository, install the Python dependencies from `requirements.txt`, then run `node bin/cli.js` from the checkout.
+**Release status:** this repository contains source version **1.3.1**, which is not yet published to npm. The published package remains **1.2.1**, so the `npx` examples below install 1.2.1 until 1.3.1 is separately published. To test the current checkout, clone the repository, install the Python dependencies from `requirements.txt`, then run `node bin/cli.js` from the checkout.
 
     npx -y ocular-audio-mcp
 
@@ -197,17 +197,17 @@ The NPM package does not hide native Python/system prerequisites; OcularAudio is
 ## Cookies and restricted media
 Operator-supplied cookies.txt can be used for sources that require an authenticated browser session. Never commit cookies, access tokens or credentials.
 
-## Release v1.3.0
+## Release v1.3.1
 
     npm install
     npm run check
     npm pack
 
-This creates ocular-audio-mcp-1.3.0.tgz. Inspect it before publishing:
+This creates ocular-audio-mcp-1.3.1.tgz. Inspect it before publishing:
 
-    npm publish ocular-audio-mcp-1.3.0.tgz --access public
+    npm publish ocular-audio-mcp-1.3.1.tgz --access public
 
-See RELEASE_v1.3.0.md. A manual GitHub Actions workflow can also build and upload the exact tarball as an artifact.
+See RELEASE_v1.3.1.md. A manual GitHub Actions workflow can also build and upload the exact tarball and SHA-256 checksum as artifacts.
 
 ## Validation
 
