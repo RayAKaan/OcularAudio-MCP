@@ -69,10 +69,7 @@ class CLIMCPStdioTests(unittest.TestCase):
 
         def receive(expected_id):
             events = selector.select(timeout=15)
-            self.assertTrue(
-                events,
-                msg=f"Timed out waiting for MCP response {expected_id}; stderr: {process.stderr.read()[-4000:]}",
-            )
+            self.assertTrue(events, msg=f"Timed out waiting for MCP response {expected_id}")
             line = process.stdout.readline()
             self.assertTrue(line.strip(), msg=f"Empty MCP response for {expected_id}")
             payload = json.loads(line)
