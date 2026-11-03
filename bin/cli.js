@@ -591,9 +591,10 @@ if (!transportMode && !stdoutMode && !jsonMode && !quietMode) {
 const { spawn } = require('child_process');
 
 const isStdioMcp = transportMode === 'stdio';
+const isLongLivedServer = Boolean(transportMode);
 const pythonProcess = spawn(pythonCmd, pyArgs, {
-  // MCP stdio must be a transparent byte stream: do not buffer, decorate, or
-  // consume the host's stdin/stdout, and never apply the CLI's job timeout.
+  // MCP stdio must be a transparent byte stream. Both MCP transports are
+  // long-lived servers and must never inherit the one-shot job timeout.
   stdio: isStdioMcp ? 'inherit' : ['ignore', 'pipe', 'pipe'],
   windowsHide: true,
 });
@@ -604,7 +605,7 @@ const pythonProcess = spawn(pythonCmd, pyArgs, {
 const SPAWN_TIMEOUT_MS = Math.ceil((budgetSeconds ?? 900) * 1000) + 30_000;
 let timedOut = false;
 let forceKillTimeoutId = null;
-const timeoutId = isStdioMcp ? null : setTimeout(() => {
+const timeoutId = isLongLivedServer ? null : setTimeout(() => {
   timedOut = true;
   console.error(`[ERROR] Process exceeded its ${SPAWN_TIMEOUT_MS / 1000}s execution deadline. Sending termination signal...`);
   pythonProcess.kill('SIGTERM');
