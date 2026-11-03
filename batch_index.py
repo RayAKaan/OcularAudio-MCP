@@ -16,7 +16,6 @@ import os
 from pathlib import Path
 import re
 import tempfile
-import re
 from typing import Any, Awaitable, Callable, Iterable
 
 TOKEN_RE = re.compile(r"[\\wÀ-ÖØ-öø-ÿ]+", re.UNICODE)
