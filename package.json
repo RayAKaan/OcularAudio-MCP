@@ -66,6 +66,7 @@
   },
   "scripts": {
     "check": "node scripts/verify-release.js",
+    "verify:package": "node scripts/verify-package-artifact.js",
     "pack:release": "npm pack"
   },
   "publishConfig": {
