@@ -39,7 +39,9 @@ function ensureCacheDir() {
 
 function listCachedFiles() {
   ensureCacheDir();
-  return fs.readdirSync(CACHE_DIR).filter(f => f.endsWith('.json') && f !== 'config.json' && fs.statSync(path.join(CACHE_DIR, f)).isFile());
+  return fs.readdirSync(CACHE_DIR, { withFileTypes: true })
+    .filter(entry => entry.isFile() && entry.name.endsWith('.json') && entry.name !== 'config.json')
+    .map(entry => entry.name);
 }
 
 function getCacheStats() {
@@ -601,7 +603,7 @@ const pythonProcess = spawn(pythonCmd, pyArgs, {
 
 // Keep the Node supervisor aligned with the Python execution budget. The
 // additional grace period allows Python to flush results and clean temporary
-// files; stdio MCP servers remain intentionally long-lived.
+// files; both MCP transports remain intentionally long-lived.
 const SPAWN_TIMEOUT_MS = Math.ceil((budgetSeconds ?? 900) * 1000) + 30_000;
 let timedOut = false;
 let forceKillTimeoutId = null;
