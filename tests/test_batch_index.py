@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 import tempfile
 import unittest
@@ -111,6 +112,27 @@ class BatchIndexTests(unittest.TestCase):
             path = Path(directory)
             write_batch_result(path, "abc", {"status": "complete"})
             self.assertEqual({"status": "complete"}, read_batch_result(path, "abc"))
+
+    def test_concurrent_batch_writes_use_independent_temporary_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                list(executor.map(
+                    lambda index: write_batch_result(path, "shared", {"writer": index, "data": "x" * 1000}),
+                    range(24),
+                ))
+            result = read_batch_result(path, "shared")
+            self.assertIn(result["writer"], range(24))
+            self.assertEqual(1000, len(result["data"]))
+            self.assertEqual([], list(path.glob("*.tmp")))
+
+    def test_batch_cache_ids_cannot_escape_cache_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            with self.assertRaises(ValueError):
+                write_batch_result(path, "../escape", {"status": "unsafe"})
+            with self.assertRaises(ValueError):
+                read_batch_result(path, "../escape")
 
 
 if __name__ == "__main__":
