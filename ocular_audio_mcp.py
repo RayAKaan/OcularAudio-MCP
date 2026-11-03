@@ -355,7 +355,11 @@ def _clear_cache(video_id: str = None) -> dict:
                 batch_payload = json.loads(batch_file.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
+            if not isinstance(batch_payload, dict):
+                continue
             sources = batch_payload.get("sources", [])
+            if not isinstance(sources, list):
+                continue
             contains_source = any(
                 isinstance(item, dict)
                 and isinstance(item.get("source"), dict)
