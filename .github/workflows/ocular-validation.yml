@@ -2,7 +2,7 @@ name: OcularAudio Validation
 
 on:
   push:
-    branches: ["main", "feat/**", "fix/**"]
+    branches: ["main", "feat/**", "fix/**", "test/**"]
   pull_request:
     branches: ["main"]
 
@@ -33,6 +33,8 @@ jobs:
         run: node --check bin/cli.js
       - name: Validate release metadata
         run: npm run check
+      - name: Verify packed NPM artifact as an installed consumer
+        run: npm run verify:package
       - name: Verify MCP registry package exists
         run: |
           registry_version="$(node -p "require('./server.json').packages[0].version")"
