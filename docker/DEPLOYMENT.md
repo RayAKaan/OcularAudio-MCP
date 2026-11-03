@@ -5,9 +5,11 @@ The Compose deployment is intentionally local-only by default:
 - The host port is published on `127.0.0.1`, not every network interface.
 - The application runs as UID/GID `10001`, with its cache volume mounted under its home directory.
 - The container uses a read-only root filesystem, a bounded PID count, a writable temporary filesystem, dropped Linux capabilities, and `no-new-privileges`.
-- The Compose healthcheck currently confirms that the HTTP listener accepts TCP connections; it is a process/listener check, not an authenticated MCP readiness check.
+- The container healthcheck sends an MCP `initialize` request to the Streamable HTTP endpoint and includes the configured bearer token when authentication is enabled. It verifies the application protocol, not merely that a TCP port is open.
 
 ## Start locally
+
+Copy the environment template and start the service:
 
 ```sh
 cp .env.example .env

@@ -32,6 +32,11 @@ class ContainerDeploymentDefaultsTests(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, compose)
 
+    def test_compose_healthcheck_uses_authenticated_mcp_initialize(self):
+        compose = (ROOT / "docker" / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("scripts/docker_http_smoke.py", compose)
+        self.assertNotIn("socket.create_connection", compose)
+
 
 if __name__ == "__main__":
     unittest.main()
