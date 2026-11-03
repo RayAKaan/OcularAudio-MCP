@@ -18,6 +18,8 @@ class CacheLifecycleTests(unittest.TestCase):
             for path in (visual, frames, batches, evidence):
                 path.mkdir(parents=True, exist_ok=True)
             (root / "video.json").write_text("{}", encoding="utf-8")
+            (root / "config.json").write_text("{}", encoding="utf-8")
+            (root / "audit.jsonl").write_text("audit", encoding="utf-8")
             (visual / "video.json").write_text("{}", encoding="utf-8")
             (evidence / "video.json").write_text("{}", encoding="utf-8")
             (batches / "batch.json").write_text("{}", encoding="utf-8")
@@ -30,6 +32,8 @@ class CacheLifecycleTests(unittest.TestCase):
 
             self.assertGreaterEqual(result["cleared"], 5)
             self.assertFalse((root / "video.json").exists())
+            self.assertTrue((root / "config.json").exists())
+            self.assertTrue((root / "audit.jsonl").exists())
             self.assertFalse((visual / "video.json").exists())
             self.assertFalse((evidence / "video.json").exists())
             self.assertFalse((batches / "batch.json").exists())
