@@ -2,7 +2,7 @@ name: OcularAudio Docker Validation
 
 on:
   push:
-    branches: ["main", "fix/**", "feat/**"]
+    branches: ["main"]
     paths:
       - "docker/**"
       - "scripts/docker_http_smoke.py"
