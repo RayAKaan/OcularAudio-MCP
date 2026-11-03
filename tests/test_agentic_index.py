@@ -93,6 +93,24 @@ class AgenticIndexTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual("error", audit.status)
 
+    def test_retries_share_one_operation_deadline(self):
+        state = {"attempts": 0}
+
+        async def worker():
+            state["attempts"] += 1
+            await asyncio.sleep(0.04)
+            raise RuntimeError("transient")
+
+        result, audit = asyncio.run(execute_with_policy(
+            "bounded-retries",
+            worker,
+            ExecutionPolicy(timeout_seconds=0.05, max_retries=3, backoff_seconds=0.02),
+        ))
+        self.assertIsNone(result)
+        self.assertEqual("error", audit.status)
+        self.assertEqual(1, state["attempts"])
+        self.assertEqual(1, audit.detail["attempt"])
+
     def test_health_report(self):
         report = health_report(
             {"ffmpeg": True, "opencv": True, "whisper": {"available": True}, "tesseract": {"available": True}},
