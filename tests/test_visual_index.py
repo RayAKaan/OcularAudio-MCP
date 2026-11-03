@@ -21,6 +21,18 @@ class VisualIndexTests(unittest.TestCase):
         self.assertEqual(sample_timestamps(25, interval_seconds=10), [0, 10, 20, 25])
         self.assertEqual(select_burst_timestamps(20, radius_seconds=4, count=5), [16, 18, 20, 22, 24])
 
+    def test_frame_cap_preserves_coverage_to_video_end(self):
+        self.assertEqual(
+            sample_timestamps(10000, interval_seconds=10, max_frames=5),
+            [0, 2500, 5000, 7500, 10000],
+        )
+
+    def test_sampling_rejects_non_finite_or_invalid_inputs(self):
+        with self.assertRaises(ValueError):
+            sample_timestamps(float("inf"))
+        with self.assertRaises(ValueError):
+            sample_timestamps(10, interval_seconds=0)
+
     def test_crop_normalization(self):
         self.assertEqual(
             normalize_crop_box(0.25, 0.25, 0.5, 0.5, 1000, 800),
