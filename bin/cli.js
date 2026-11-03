@@ -66,13 +66,33 @@ function getCacheStats() {
   return { count: files.length, totalSize, videos };
 }
 
+function removeFilesRecursively(directory, shouldRemove = () => true) {
+  if (!fs.existsSync(directory)) return 0;
+  let removed = 0;
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      removed += removeFilesRecursively(entryPath, shouldRemove);
+      continue;
+    }
+    if (shouldRemove(entry.name, entryPath, entry)) {
+      fs.rmSync(entryPath, { force: true, recursive: entry.isDirectory() });
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
 function clearAllCache() {
   ensureCacheDir();
-  const files = listCachedFiles();
-  for (const file of files) {
-    fs.unlinkSync(path.join(CACHE_DIR, file));
-  }
-  return files.length;
+  // Keep user configuration, cookies and operational audit history. Remove
+  // transcript JSON plus all evidence, visual/frame and batch cache artifacts.
+  let removed = removeFilesRecursively(CACHE_DIR, (name, entryPath) => {
+    const relative = path.relative(CACHE_DIR, entryPath).split(path.sep);
+    if (relative.length === 1) return name.endsWith('.json') && name !== 'config.json';
+    return ['evidence', 'visual', 'batches'].includes(relative[0]);
+  });
+  return removed;
 }
 
 function formatBytes(bytes) {
@@ -477,7 +497,7 @@ if (checkMode) {
 
   checkProcess.on('error', (error) => {
     if (error.code === 'ENOENT') {
-      console.error('[ERROR] Python not found. Please install Python 3.9+ and add it to your PATH.');
+      console.error('[ERROR] Python not found. Please install Python 3.11+ and add it to your PATH.');
     } else {
       console.error(`[ERROR] Failed to start Python: ${error.message}`);
     }
@@ -578,12 +598,17 @@ const pythonProcess = spawn(pythonCmd, pyArgs, {
   windowsHide: true,
 });
 
-// Media-processing commands are bounded; an MCP server is intentionally long-lived.
-const SPAWN_TIMEOUT_MS = 5 * 60 * 1000;
+// Keep the Node supervisor aligned with the Python execution budget. The
+// additional grace period allows Python to flush results and clean temporary
+// files; stdio MCP servers remain intentionally long-lived.
+const SPAWN_TIMEOUT_MS = Math.ceil((budgetSeconds ?? 900) * 1000) + 30_000;
+let timedOut = false;
+let forceKillTimeoutId = null;
 const timeoutId = isStdioMcp ? null : setTimeout(() => {
-  console.error(`[ERROR] Process timed out after ${SPAWN_TIMEOUT_MS / 1000}s. Killing...`);
+  timedOut = true;
+  console.error(`[ERROR] Process exceeded its ${SPAWN_TIMEOUT_MS / 1000}s execution deadline. Sending termination signal...`);
   pythonProcess.kill('SIGTERM');
-  process.exit(1);
+  forceKillTimeoutId = setTimeout(() => pythonProcess.kill('SIGKILL'), 5_000);
 }, SPAWN_TIMEOUT_MS);
 
 let stdout = '';
@@ -626,6 +651,7 @@ pythonProcess.on('error', (error) => {
 
 pythonProcess.on('close', async (code) => {
   if (timeoutId) clearTimeout(timeoutId);
+  if (forceKillTimeoutId) clearTimeout(forceKillTimeoutId);
 
   // In stdio MCP mode, protocol bytes were forwarded directly. Do not
   // buffer/reprint output or apply standalone CLI result formatting.
@@ -635,6 +661,11 @@ pythonProcess.on('close', async (code) => {
   }
 
   if (code !== 0) {
+    if (timedOut) {
+      console.error(chalk.red('\n[ERROR] Python process was terminated after exceeding the execution deadline.'));
+      process.exitCode = 1;
+      return;
+    }
     console.error(chalk.red(`\n[ERROR] Python process exited with code ${code}`));
     if (stderr) {
       // Parse stderr for actionable error messages
