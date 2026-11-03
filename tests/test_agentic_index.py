@@ -119,6 +119,18 @@ class AgenticIndexTests(unittest.TestCase):
         )
         self.assertEqual("healthy", report["status"])
 
+    def test_health_report_detects_missing_cache_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing"
+            report = health_report(
+                {"ffmpeg": True, "opencv": True},
+                cache_dir=missing,
+                batch_cache_dir=missing,
+            )
+        self.assertEqual("degraded", report["status"])
+        self.assertFalse(report["checks"]["cache_writable"])
+        self.assertFalse(report["checks"]["batch_cache_writable"])
+
     def test_audit_roundtrip(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "audit.jsonl"
