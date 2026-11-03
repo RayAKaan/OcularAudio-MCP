@@ -74,25 +74,23 @@ def sample_timestamps(
     limit = max(1, min(int(max_frames), 1000))
     if duration == 0:
         return [0]
-    values = sorted({
-        int(round(index * interval))
-        for index in range(int(math.floor(duration / interval)) + 1)
-    })
     endpoint = int(duration)
-    if endpoint not in values:
-        values.append(endpoint)
-        values.sort()
-    if len(values) <= limit:
-        return values
+    regular_count = int(math.floor(duration / interval)) + 1
+    regular_endpoint = int(round((regular_count - 1) * interval))
+    total_count = regular_count + int(regular_endpoint != endpoint)
+    if total_count <= limit:
+        values = [int(round(index * interval)) for index in range(regular_count)]
+        if endpoint not in values:
+            values.append(endpoint)
+        return sorted(set(values))
     if limit == 1:
-        return [values[0]]
-    # Keep coverage across the complete recording instead of truncating the
-    # tail of long videos when the frame cap is reached.
-    indexes = {
-        int(round(index * (len(values) - 1) / (limit - 1)))
+        return [0]
+    # For capped recordings, sample directly across the complete duration.
+    # Avoid constructing a potentially enormous per-interval list first.
+    return sorted({
+        int(round(index * duration / (limit - 1)))
         for index in range(limit)
-    }
-    return [values[index] for index in sorted(indexes)]
+    })
 
 
 def normalize_crop_box(
