@@ -124,7 +124,7 @@ class BatchIndexTests(unittest.TestCase):
             result = read_batch_result(path, "shared")
             self.assertIn(result["writer"], range(24))
             self.assertEqual(1000, len(result["data"]))
-            self.assertEqual([], list(path.glob("*.tmp")))
+            self.assertFalse(any(item.suffix == ".tmp" for item in path.iterdir()))
 
     def test_batch_cache_ids_cannot_escape_cache_directory(self):
         with tempfile.TemporaryDirectory() as directory:
