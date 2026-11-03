@@ -1814,50 +1814,70 @@ async def run_ocular_audio_analysis(
         top_k = int(plan.mode_decision["limits"]["max_evidence"])
         resolved_mode = plan.mode_decision["resolved_mode"]
         outputs = []
+        deadline = time.monotonic() + effective_policy.timeout_seconds
+        timed_out = False
         for step in plan.steps:
+            remaining = deadline - time.monotonic()
+            if remaining < 0.001:
+                timed_out = True
+                break
+            step_policy = ExecutionPolicy(
+                timeout_seconds=remaining,
+                max_retries=effective_policy.max_retries,
+                backoff_seconds=effective_policy.backoff_seconds,
+                max_steps=effective_policy.max_steps,
+            ).validate()
             if step.operation == "inspect_source":
                 worker = lambda: inspect_ocular_audio_source(url)
             elif step.operation == "search_hybrid":
                 worker = lambda: search_ocular_audio_hybrid(
                     url=url, query=query, top_k=top_k, mode=resolved_mode,
-                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                    budget_seconds=min(remaining, plan.mode_decision["limits"]["max_runtime_seconds"]),
                 )
             elif step.operation == "inspect_moment":
-                evidence = await search_ocular_audio_hybrid(
-                    url=url, query=query, top_k=1, mode=resolved_mode,
-                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
-                )
-                payload = json.loads(evidence)
-                timestamp = float((payload.get("results") or [{}])[0].get("start_seconds", 0))
-                worker = lambda: inspect_ocular_audio_moment(url=url, timestamp_seconds=timestamp)
+                async def inspect_moment_worker():
+                    evidence = await search_ocular_audio_hybrid(
+                        url=url, query=query, top_k=1, mode=resolved_mode,
+                        budget_seconds=min(remaining, plan.mode_decision["limits"]["max_runtime_seconds"]),
+                    )
+                    payload = json.loads(evidence)
+                    timestamp = float((payload.get("results") or [{}])[0].get("start_seconds", 0))
+                    return await inspect_ocular_audio_moment(url=url, timestamp_seconds=timestamp)
+                worker = inspect_moment_worker
             elif step.operation == "search_visual":
                 worker = lambda: search_ocular_audio_visuals(
                     url=url, query=query, top_k=top_k, mode=resolved_mode,
-                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                    budget_seconds=min(remaining, plan.mode_decision["limits"]["max_runtime_seconds"]),
                 )
             elif step.operation == "timeline":
                 worker = lambda: get_ocular_audio_video_timeline(url=url)
             elif step.operation == "search_batch":
                 worker = lambda: search_ocular_audio_videos(
                     sources_json=url, query=query, top_k=top_k, mode=resolved_mode,
-                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                    budget_seconds=min(remaining, plan.mode_decision["limits"]["max_runtime_seconds"]),
                 )
             elif step.operation == "compare_batch":
                 worker = lambda: compare_ocular_audio_videos(
                     sources_json=url, query=query, mode=resolved_mode,
-                    budget_seconds=plan.mode_decision["limits"]["max_runtime_seconds"],
+                    budget_seconds=min(remaining, plan.mode_decision["limits"]["max_runtime_seconds"]),
                 )
             else:
                 raise ValueError(f"Unsupported plan operation: {step.operation}")
-            result, audit = await execute_with_policy(step.operation, worker, effective_policy)
+            result, audit = await execute_with_policy(step.operation, worker, step_policy)
             append_audit_record(AUDIT_LOG_PATH, audit)
             outputs.append({"step": step.to_dict(), "audit": audit.to_dict(), "result": result})
             if audit.status != "success" and step.required:
+                timed_out = time.monotonic() >= deadline
                 break
-        return json.dumps({
+        timed_out = timed_out or time.monotonic() >= deadline
+        response = {
             "plan": plan.to_dict(), "mode_decision": plan.mode_decision,
             "completed_steps": len(outputs), "results": outputs,
-        }, ensure_ascii=False, indent=2, default=str)
+        }
+        if timed_out:
+            response["timed_out"] = True
+            response["error"] = "Agentic analysis exceeded its total execution budget; partial results are included."
+        return json.dumps(response, ensure_ascii=False, indent=2, default=str)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
