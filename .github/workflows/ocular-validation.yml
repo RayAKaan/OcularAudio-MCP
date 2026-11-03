@@ -2,9 +2,9 @@ name: OcularAudio Validation
 
 on:
   push:
-    branches: ["main", "feat/**"]
+    branches: ["main", "feat/**", "fix/**"]
   pull_request:
-    branches: ["main", "fix/**", "feat/**"]
+    branches: ["main"]
 
 jobs:
   validate:
