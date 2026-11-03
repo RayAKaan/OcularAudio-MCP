@@ -590,7 +590,22 @@ if (!transportMode && !stdoutMode && !jsonMode && !quietMode) {
 }
 
 // ── Spawn Python process ────────────────────────────────────────────────────
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
+
+function terminateProcessTree(child, force = false) {
+  if (!child.pid) return;
+  if (process.platform === 'win32') {
+    const args = ['/pid', String(child.pid), '/T'];
+    if (force) args.push('/F');
+    execFile('taskkill', args, () => {});
+    return;
+  }
+  try {
+    process.kill(-child.pid, force ? 'SIGKILL' : 'SIGTERM');
+  } catch {
+    try { child.kill(force ? 'SIGKILL' : 'SIGTERM'); } catch {}
+  }
+}
 
 const isStdioMcp = transportMode === 'stdio';
 const isLongLivedServer = Boolean(transportMode);
@@ -599,6 +614,9 @@ const pythonProcess = spawn(pythonCmd, pyArgs, {
   // long-lived servers and must never inherit the one-shot job timeout.
   stdio: isStdioMcp ? 'inherit' : ['ignore', 'pipe', 'pipe'],
   windowsHide: true,
+  // Isolate one-shot jobs into a process group so FFmpeg/yt-dlp descendants
+  // are terminated with Python when the supervisor deadline is reached.
+  detached: !isLongLivedServer && process.platform !== 'win32',
 });
 
 // Keep the Node supervisor aligned with the Python execution budget. The
@@ -610,8 +628,8 @@ let forceKillTimeoutId = null;
 const timeoutId = isLongLivedServer ? null : setTimeout(() => {
   timedOut = true;
   console.error(`[ERROR] Process exceeded its ${SPAWN_TIMEOUT_MS / 1000}s execution deadline. Sending termination signal...`);
-  pythonProcess.kill('SIGTERM');
-  forceKillTimeoutId = setTimeout(() => pythonProcess.kill('SIGKILL'), 5_000);
+  terminateProcessTree(pythonProcess, false);
+  forceKillTimeoutId = setTimeout(() => terminateProcessTree(pythonProcess, true), 5_000);
 }, SPAWN_TIMEOUT_MS);
 
 let stdout = '';
